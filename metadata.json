@@ -1,0 +1,6 @@
+{
+  "name": "Monthly Tracker",
+  "description": "Track your daily activities, study progress, monthly goals, expenses, habits, and personal tasks using an interactive monthly calendar.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

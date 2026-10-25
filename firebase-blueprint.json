@@ -1,0 +1,437 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated user's private profile record stored in users/{uid}",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the user"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Full name of the user"
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 254,
+          "description": "Email address of the user"
+        },
+        "phoneNumber": {
+          "type": "string",
+          "maxLength": 30,
+          "description": "Phone number of the user"
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 25000,
+          "description": "URL or compressed data URI for user's profile avatar"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was created"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was last updated"
+        }
+      },
+      "required": ["uid", "displayName", "email", "phoneNumber", "photoURL", "createdAt", "updatedAt"]
+    },
+    "DashboardState": {
+      "title": "DashboardState",
+      "description": "User's Monthly Target & Task Tracker state stored in users/{uid}/dashboard/{docId}",
+      "type": "object",
+      "properties": {
+        "docId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "mainName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "surname": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "phone": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "photo": {
+          "type": "string",
+          "maxLength": 50000
+        },
+        "tasks": {
+          "type": "array",
+          "description": "List of task names bounded to 50 items"
+        },
+        "activeTask": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "currentYear": {
+          "type": "number"
+        },
+        "currentMonth": {
+          "type": "number"
+        },
+        "selectedDay": {
+          "type": "number"
+        },
+        "records": {
+          "type": "object",
+          "description": "Map of task__year-month__day to status and note"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "docId",
+        "uid",
+        "mainName",
+        "surname",
+        "email",
+        "phone",
+        "photo",
+        "tasks",
+        "activeTask",
+        "currentYear",
+        "currentMonth",
+        "selectedDay",
+        "records",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Tracker": {
+      "title": "Tracker",
+      "description": "User-created activity, study, or expense tracker stored in users/{uid}/trackers/{trackerId}",
+      "type": "object",
+      "properties": {
+        "trackerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "type": {
+          "type": "string",
+          "enum": ["study", "habit", "goal", "fitness", "expense", "custom"],
+          "maxLength": 30
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "trackingMethod": {
+          "type": "string",
+          "enum": ["status", "study_hours", "expense_log"],
+          "maxLength": 30
+        },
+        "monthlyGoal": {
+          "type": "number"
+        },
+        "dailyTargetHours": {
+          "type": "number"
+        },
+        "defaultSubject": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "defaultTask": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "archived": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "trackerId",
+        "uid",
+        "name",
+        "type",
+        "description",
+        "trackingMethod",
+        "monthlyGoal",
+        "dailyTargetHours",
+        "defaultSubject",
+        "defaultTask",
+        "archived",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DailyRecord": {
+      "title": "DailyRecord",
+      "description": "Daily activity or study status record for a specific tracker and YYYY-MM-DD date",
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string",
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "trackerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["completed", "not_completed", "skipped", "not_marked"],
+          "maxLength": 20
+        },
+        "subject": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "taskDescription": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "studyDurationMinutes": {
+          "type": "number"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "date",
+        "uid",
+        "trackerId",
+        "status",
+        "subject",
+        "taskDescription",
+        "studyDurationMinutes",
+        "notes",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ExpenseRecord": {
+      "title": "ExpenseRecord",
+      "description": "Individual expense entry recorded on a specific date",
+      "type": "object",
+      "properties": {
+        "expenseId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "trackerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "date": {
+          "type": "string",
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "monthKey": {
+          "type": "string",
+          "maxLength": 7,
+          "pattern": "^[0-9]{4}-[0-9]{2}$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "amount": {
+          "type": "number"
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "paymentMethod": {
+          "type": "string",
+          "maxLength": 50
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "expenseId",
+        "uid",
+        "trackerId",
+        "date",
+        "monthKey",
+        "title",
+        "amount",
+        "category",
+        "paymentMethod",
+        "notes",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserSettings": {
+      "title": "UserSettings",
+      "description": "User preferences for appearance, calendar, currency, and excluded weekdays",
+      "type": "object",
+      "properties": {
+        "settingId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "theme": {
+          "type": "string",
+          "enum": ["light", "dark", "system"],
+          "maxLength": 20
+        },
+        "currency": {
+          "type": "string",
+          "enum": ["INR", "USD", "EUR", "GBP"],
+          "maxLength": 10
+        },
+        "weekStartsOn": {
+          "type": "number"
+        },
+        "defaultTrackerId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "timezone": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "excludedWeekdays": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "settingId",
+        "uid",
+        "theme",
+        "currency",
+        "weekStartsOn",
+        "defaultTrackerId",
+        "timezone",
+        "excludedWeekdays",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User profile document keyed by Firebase Auth UID"
+    },
+    "/users/{uid}/dashboard/{docId}": {
+      "schema": { "$ref": "#/entities/DashboardState" },
+      "description": "User's Monthly Target & Task Tracker dashboard state"
+    },
+    "/users/{uid}/trackers/{trackerId}": {
+      "schema": { "$ref": "#/entities/Tracker" },
+      "description": "User's activity, study, and expense trackers"
+    },
+    "/users/{uid}/trackers/{trackerId}/dailyRecords/{dateId}": {
+      "schema": { "$ref": "#/entities/DailyRecord" },
+      "description": "Daily status and study records keyed by YYYY-MM-DD"
+    },
+    "/users/{uid}/expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/ExpenseRecord" },
+      "description": "User's expense entries associated with an expense tracker"
+    },
+    "/users/{uid}/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/UserSettings" },
+      "description": "User's application and calendar settings"
+    }
+  }
+}

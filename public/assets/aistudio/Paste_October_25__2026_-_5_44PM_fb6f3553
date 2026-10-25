@@ -1,0 +1,2100 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monthly Target & Task Tracker</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Merriweather:wght@700;900&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        serif: ['Merriweather', 'Georgia', 'serif'],
+                    },
+                    colors: {
+                        navy: {
+                            950: '#070b14',
+                            900: '#0b101e',
+                            800: '#10172a',
+                            700: '#17213a',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background-color: #090d18;
+            color: #f8fafc;
+            font-family: 'Inter', sans-serif;
+            overflow-x: hidden;
+        }
+
+        /* Exact Cyan Banner Gradient */
+        .cyan-banner {
+            background: linear-gradient(90deg, #0284c7 0%, #00a8e8 50%, #0284c7 100%);
+            box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.35);
+        }
+
+        /* Double Cyan Separator Line above Yellow Header */
+        .cyan-double-line {
+            height: 5px;
+            background: linear-gradient(90deg, #00b4d8, #0096c7, #00b4d8);
+            border-top: 1px solid #48cae4;
+            border-bottom: 1px solid #023e8a;
+        }
+
+        /* Bright Yellow Calendar Header */
+        .yellow-day-header {
+            background-color: #e6e600;
+            color: #050505;
+            font-family: 'Merriweather', Georgia, serif;
+            letter-spacing: 0.04em;
+        }
+
+        /* Calendar Grid Cell */
+        .calendar-cell {
+            min-height: 92px;
+            background-color: #0c1222;
+            border: 1px solid #151f38;
+            transition: all 0.18s ease;
+            position: relative;
+            user-select: none;
+        }
+
+        .calendar-cell.active-day:hover {
+            background-color: #121c34;
+            border-color: #253861;
+        }
+
+        /* Selected / Current Day Cell Highlight */
+        .calendar-cell.selected-day {
+            border: 2px solid #0ea5e9 !important;
+            background: radial-gradient(circle at center, rgba(14, 165, 233, 0.14) 0%, rgba(12, 18, 34, 0.96) 100%);
+            box-shadow: inset 0 0 18px rgba(14, 165, 233, 0.22), 0 0 10px rgba(14, 165, 233, 0.18);
+            z-index: 10;
+        }
+
+        /* Subtle Cell Tint for 3 Statuses */
+        .calendar-cell.status-completed {
+            background: radial-gradient(circle at center, rgba(16, 185, 129, 0.15) 0%, rgba(12, 18, 34, 0.96) 100%);
+            border-color: rgba(16, 185, 129, 0.38);
+        }
+        .calendar-cell.status-not_completed {
+            background: radial-gradient(circle at center, rgba(239, 68, 68, 0.15) 0%, rgba(12, 18, 34, 0.96) 100%);
+            border-color: rgba(239, 68, 68, 0.38);
+        }
+        .calendar-cell.status-skipped {
+            background: radial-gradient(circle at center, rgba(234, 179, 8, 0.15) 0%, rgba(12, 18, 34, 0.96) 100%);
+            border-color: rgba(234, 179, 8, 0.38);
+        }
+
+        /* Circular Date Button Inside Calendar Cell */
+        .date-circle {
+            width: 44px;
+            height: 44px;
+            border-radius: 9999px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 0.92rem;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+        }
+        @media (min-width: 640px) {
+            .date-circle {
+                width: 48px;
+                height: 48px;
+                font-size: 1rem;
+            }
+        }
+        .calendar-cell.active-day:hover .date-circle {
+            transform: scale(1.08);
+        }
+
+        /* Unmarked Circular Date */
+        .date-circle-unmarked {
+            background-color: #131d36;
+            border: 2px solid #28375c;
+            color: #cbd5e1;
+        }
+        .calendar-cell.selected-day .date-circle-unmarked {
+            border-color: #38bdf8;
+            color: #38bdf8;
+            box-shadow: 0 0 12px rgba(56, 189, 248, 0.35);
+        }
+
+        /* GREEN = Completed Circular Date */
+        .date-circle-completed {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            border: 2px solid #6ee7b7;
+            color: #ffffff;
+            box-shadow: 0 0 16px rgba(16, 185, 129, 0.5);
+        }
+
+        /* RED = Not Completed Circular Date */
+        .date-circle-not_completed {
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+            border: 2px solid #fca5a5;
+            color: #ffffff;
+            box-shadow: 0 0 16px rgba(239, 68, 68, 0.5);
+        }
+
+        /* YELLOW = Skipped Circular Date */
+        .date-circle-skipped {
+            background: linear-gradient(135deg, #eab308 0%, #ca8a04 100%);
+            border: 2px solid #fde047;
+            color: #090d16;
+            box-shadow: 0 0 16px rgba(234, 179, 8, 0.45);
+        }
+
+        /* Stat Boxes */
+        .stat-completed {
+            background: linear-gradient(180deg, rgba(6, 78, 59, 0.5) 0%, rgba(6, 78, 59, 0.2) 100%);
+            border: 1px solid rgba(16, 185, 129, 0.4);
+        }
+        .stat-not-completed {
+            background: linear-gradient(180deg, rgba(127, 29, 29, 0.5) 0%, rgba(127, 29, 29, 0.2) 100%);
+            border: 1px solid rgba(239, 68, 68, 0.4);
+        }
+        .stat-skipped {
+            background: linear-gradient(180deg, rgba(113, 63, 18, 0.5) 0%, rgba(113, 63, 18, 0.2) 100%);
+            border: 1px solid rgba(234, 179, 8, 0.4);
+        }
+        .stat-rate {
+            background: linear-gradient(180deg, rgba(12, 74, 110, 0.5) 0%, rgba(12, 74, 110, 0.22) 100%);
+            border: 1px solid rgba(56, 189, 248, 0.4);
+        }
+        .btn-graph {
+            background: linear-gradient(180deg, rgba(49, 46, 129, 0.55) 0%, rgba(30, 27, 75, 0.45) 100%);
+            border: 1px solid rgba(99, 102, 241, 0.5);
+        }
+        .btn-graph:hover {
+            background: linear-gradient(180deg, rgba(67, 56, 202, 0.7) 0%, rgba(49, 46, 129, 0.65) 100%);
+            border-color: rgba(129, 140, 248, 0.85);
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #090d18;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #1e293b;
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #0ea5e9;
+        }
+
+        /* Print Styles */
+        @media print {
+            body {
+                background-color: #090d18 !important;
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+            }
+            .no-print {
+                display: none !important;
+            }
+            .print-full {
+                width: 100% !important;
+                max-width: 100% !important;
+            }
+            .calendar-cell {
+                min-height: 75px !important;
+            }
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col selection:bg-sky-500 selection:text-white">
+
+    <!-- TOP HEADER BAR -->
+    <header class="w-full bg-[#0c1220] border-b border-slate-800/80 px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
+        <div class="flex items-center gap-3">
+            <!-- Sidebar Toggle -->
+            <button onclick="toggleSidebar()" title="Toggle Personal Profile Sidebar" class="no-print w-9 h-9 rounded-lg bg-[#151f36] hover:bg-[#1e2c4c] border border-slate-700/70 flex items-center justify-center text-sky-400 transition">
+                <i class="fa-solid fa-id-card text-sm"></i>
+            </button>
+            <div>
+                <h1 id="headerTitle" class="font-serif text-lg sm:text-2xl md:text-[25px] font-black tracking-wide text-white leading-tight">
+                    XXX YYY’s Target Tracker
+                </h1>
+            </div>
+        </div>
+
+        <!-- Top Right Action Buttons -->
+        <div class="flex flex-wrap items-center gap-2 sm:gap-2.5 no-print">
+            <!-- Quick Click Legend Pill (Desktop) -->
+            <div class="hidden 2xl:flex items-center gap-3 bg-[#121a2d] border border-slate-800 px-3.5 py-1.5 rounded-lg text-xs text-slate-300 mr-1">
+                <span class="text-slate-400 font-medium">Click circular date:</span>
+                <span class="flex items-center gap-1.5 text-emerald-400 font-semibold"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span> 1st: Completed</span>
+                <span class="flex items-center gap-1.5 text-rose-400 font-semibold"><span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span> 2nd: Not Completed</span>
+                <span class="flex items-center gap-1.5 text-amber-400 font-semibold"><span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span> 3rd: Skipped</span>
+                <span class="flex items-center gap-1 text-slate-400"><i class="fa-regular fa-circle"></i> 4th: Clear</span>
+            </div>
+
+            <!-- Cloud Database Sync Badge -->
+            <div id="cloudSyncBadge" class="px-3 py-1.5 rounded-lg bg-[#11192d] border border-slate-800 text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
+                <span id="syncDot" class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span id="syncText">Cloud Synced</span>
+            </div>
+
+            <!-- Account Sign In / Sign Up Button -->
+            <button id="authHeaderBtn" onclick="openAuthModal()" class="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500 text-white text-xs sm:text-sm font-semibold flex items-center gap-2 transition shadow-sm">
+                <i class="fa-solid fa-user-lock text-xs"></i>
+                <span id="authHeaderBtnText">Sign In / Sign Up</span>
+            </button>
+
+            <!-- Edit Profile Button -->
+            <button onclick="openProfileModal()" class="px-3 py-1.5 rounded-lg bg-[#17223b] hover:bg-[#1f2e4f] border border-sky-500/30 text-sky-300 text-xs sm:text-sm font-medium flex items-center gap-1.5 transition shadow-sm">
+                <i class="fa-solid fa-user-pen text-xs"></i>
+                <span class="hidden sm:inline">Profile</span>
+            </button>
+
+            <!-- Print Tracker Button -->
+            <button onclick="window.print()" class="px-3.5 py-1.5 rounded-lg bg-[#1a2336] hover:bg-[#25314a] border border-slate-700/80 text-slate-100 text-xs sm:text-sm font-medium flex items-center gap-2 transition shadow-sm">
+                <i class="fa-solid fa-print text-xs text-slate-300"></i>
+                <span class="hidden md:inline">Print Tracker</span>
+            </button>
+
+            <!-- Red Power / Account & Reset Button -->
+            <button onclick="openResetModal()" title="Account Logout or Reset Options" class="w-9 h-8 rounded-lg bg-[#28141e] hover:bg-[#3d1a28] border border-rose-900/60 text-rose-400 hover:text-rose-300 flex items-center justify-center transition shadow-sm">
+                <i class="fa-solid fa-power-off text-xs"></i>
+            </button>
+        </div>
+    </header>
+
+    <!-- MAIN CONTENT WORKSPACE: SIDEBAR (USER PROFILE) + TRACKER BOARD -->
+    <div class="flex-1 flex flex-col lg:flex-row gap-4 p-3 sm:p-4 max-w-[1620px] w-full mx-auto">
+
+        <!-- LEFT SIDEBAR: USER PROFILE DISPLAY (Main Name XXX, Surname/Title YYY, Photo, Email ID, Phone Number) -->
+        <aside id="profileSidebar" class="w-full lg:w-[310px] xl:w-[330px] shrink-0 flex flex-col gap-4 transition-all duration-300">
+            <div class="bg-[#0d1424] border border-sky-500/40 rounded-xl overflow-hidden shadow-[0_0_25px_rgba(2,132,199,0.12)] flex flex-col h-full">
+                
+                <!-- Top Profile Cover Banner -->
+                <div class="h-20 cyan-banner relative flex items-end justify-between px-3 pb-2">
+                    <span id="accountModeBadge" class="text-[10px] font-bold uppercase tracking-widest bg-black/45 text-amber-300 px-2.5 py-0.5 rounded-full backdrop-blur-sm flex items-center gap-1">
+                        <i class="fa-solid fa-shield-halved"></i> Personal Dashboard
+                    </span>
+                    <button onclick="openAuthModal()" class="no-print text-[10px] font-bold uppercase tracking-wider bg-white/90 hover:bg-white text-slate-950 px-2.5 py-0.5 rounded-full shadow transition">
+                        Switch Account
+                    </button>
+                </div>
+
+                <!-- Avatar + Name Section -->
+                <div class="px-5 pt-0 pb-5 flex flex-col items-center text-center relative flex-1">
+                    <!-- Profile Photo Container -->
+                    <div class="relative -mt-12 mb-3 group">
+                        <div class="w-24 h-24 rounded-full p-1 bg-gradient-to-tr from-sky-500 via-cyan-300 to-blue-600 shadow-lg shadow-sky-500/20">
+                            <img id="profilePhotoDisplay" 
+                                 src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80" 
+                                 alt="User Profile Photo" 
+                                 onerror="this.src='https://placehold.co/200x200/0284c7/ffffff?text=XXX'"
+                                 class="w-full h-full object-cover rounded-full bg-[#0b101e] border-2 border-[#0d1424]">
+                        </div>
+                        <!-- Quick Upload Photo Trigger -->
+                        <label for="quickPhotoUpload" title="Upload your photo" class="no-print cursor-pointer absolute bottom-0 right-0 w-8 h-8 rounded-full bg-sky-500 hover:bg-sky-400 text-slate-950 flex items-center justify-center shadow-md border-2 border-[#0d1424] transition transform group-hover:scale-110">
+                            <i class="fa-solid fa-camera text-xs"></i>
+                            <input id="quickPhotoUpload" type="file" accept="image/*" class="hidden" onchange="handlePhotoFileSelect(event)">
+                        </label>
+                    </div>
+
+                    <!-- User Main Name (XXX) & Surname/Title (YYY) -->
+                    <h2 id="profileNameDisplay" class="font-serif text-xl font-black text-white tracking-wide">
+                        XXX
+                    </h2>
+                    <div class="mt-1 inline-flex items-center gap-1.5 px-3 py-0.5 rounded-md bg-sky-500/15 border border-sky-500/30">
+                        <span class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Surname / Title:</span>
+                        <span id="profileSurnameDisplay" class="text-xs font-extrabold text-sky-300 tracking-wide">YYY</span>
+                    </div>
+
+                    <!-- Status Badge -->
+                    <div class="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-950/60 border border-emerald-500/30 text-emerald-400 text-[11px] font-semibold">
+                        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                        <span>Total Completed: <strong id="profileStreakCount">0 Days</strong></span>
+                    </div>
+
+                    <!-- Divider -->
+                    <div class="w-full h-[1px] bg-slate-800/90 my-4"></div>
+
+                    <!-- Contact Information Cards (Main Name, Surname/Title, Email ID, Phone Number) -->
+                    <div class="w-full space-y-2.5 text-left">
+                        
+                        <!-- Main Name & Surname/Title Box -->
+                        <div class="grid grid-cols-2 gap-2">
+                            <div class="bg-[#121b30] border border-slate-800/90 rounded-lg p-2.5 flex items-center gap-2.5 hover:border-sky-500/40 transition">
+                                <div class="w-8 h-8 rounded-lg bg-sky-500/10 border border-sky-500/30 text-sky-400 flex items-center justify-center shrink-0">
+                                    <i class="fa-solid fa-user text-xs"></i>
+                                </div>
+                                <div class="min-w-0 flex-1">
+                                    <p class="text-[9px] uppercase tracking-wider font-semibold text-slate-400">Main Name</p>
+                                    <p id="cardMainNameText" class="text-xs font-bold text-slate-100 truncate">XXX</p>
+                                </div>
+                            </div>
+                            <div class="bg-[#121b30] border border-slate-800/90 rounded-lg p-2.5 flex items-center gap-2.5 hover:border-sky-500/40 transition">
+                                <div class="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 flex items-center justify-center shrink-0">
+                                    <i class="fa-solid fa-award text-xs"></i>
+                                </div>
+                                <div class="min-w-0 flex-1">
+                                    <p class="text-[9px] uppercase tracking-wider font-semibold text-slate-400">Surname/Title</p>
+                                    <p id="cardSurnameText" class="text-xs font-bold text-slate-100 truncate">YYY</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Email ID Field Box -->
+                        <div class="bg-[#121b30] border border-slate-800/90 rounded-lg p-2.5 flex items-center gap-3 hover:border-sky-500/40 transition group">
+                            <div class="w-9 h-9 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 flex items-center justify-center shrink-0">
+                                <i class="fa-solid fa-envelope text-sm"></i>
+                            </div>
+                            <div class="min-w-0 flex-1">
+                                <p class="text-[10px] uppercase tracking-wider font-semibold text-slate-400">Email ID</p>
+                                <p id="profileEmailDisplay" class="text-xs sm:text-sm font-semibold text-slate-100 truncate">xxx.yyy@example.com</p>
+                            </div>
+                            <button onclick="copyProfileField('email')" title="Copy Email" class="no-print opacity-60 group-hover:opacity-100 text-slate-400 hover:text-sky-400 p-1 transition">
+                                <i class="fa-regular fa-copy text-xs"></i>
+                            </button>
+                        </div>
+
+                        <!-- Phone Number Field Box -->
+                        <div class="bg-[#121b30] border border-slate-800/90 rounded-lg p-2.5 flex items-center gap-3 hover:border-sky-500/40 transition group">
+                            <div class="w-9 h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
+                                <i class="fa-solid fa-phone-volume text-sm"></i>
+                            </div>
+                            <div class="min-w-0 flex-1">
+                                <p class="text-[10px] uppercase tracking-wider font-semibold text-slate-400">Phone Number</p>
+                                <p id="profilePhoneDisplay" class="text-xs sm:text-sm font-semibold text-slate-100 truncate">+91 98765 43210</p>
+                            </div>
+                            <button onclick="copyProfileField('phone')" title="Copy Phone Number" class="no-print opacity-60 group-hover:opacity-100 text-slate-400 hover:text-emerald-400 p-1 transition">
+                                <i class="fa-regular fa-copy text-xs"></i>
+                            </button>
+                        </div>
+
+                    </div>
+
+                    <!-- Overall All-Tasks Progress Mini Widget -->
+                    <div class="w-full mt-4 bg-[#10182b] border border-slate-800 rounded-xl p-3.5 text-left">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-[11px] font-bold uppercase tracking-wider text-slate-400">All Tasks (<span id="sidebarMonthName">Oct 2026</span>)</span>
+                            <span id="overallRateBadge" class="text-xs font-bold text-emerald-400">0%</span>
+                        </div>
+                        <div class="w-full h-2 rounded-full bg-slate-800 overflow-hidden mb-3">
+                            <div id="overallProgressBar" class="h-full bg-gradient-to-r from-emerald-500 via-sky-500 to-cyan-400 transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                        <div id="subjectMiniBreakdown" class="space-y-2 max-h-36 overflow-y-auto pr-1">
+                            <!-- Dynamically populated task mini bars -->
+                        </div>
+                    </div>
+
+                    <!-- Edit Profile & Photo CTA Button -->
+                    <button onclick="openProfileModal()" class="no-print w-full mt-4 py-2.5 px-4 rounded-lg bg-gradient-to-r from-sky-600 to-cyan-600 hover:from-sky-500 hover:to-cyan-500 text-white font-semibold text-xs uppercase tracking-wider shadow-md flex items-center justify-center gap-2 transition">
+                        <i class="fa-solid fa-pen-to-square"></i>
+                        <span>Edit Name, Photo & Contact</span>
+                    </button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- RIGHT MAIN TRACKER CONTAINER -->
+        <main class="flex-1 min-w-0 print-full">
+            <div class="bg-[#0d1323] border border-[#0284c7] rounded-xl overflow-hidden shadow-[0_0_30px_rgba(2,132,199,0.15)]">
+
+                <!-- 1. TOP CYAN BANNER: ( GENERAL - OCTOBER 2026 ) -->
+                <div class="cyan-banner py-3.5 px-4 text-center border-b border-sky-400/30">
+                    <h2 id="mainCyanBannerText" class="font-serif text-base sm:text-lg md:text-xl font-black text-[#04101e] tracking-[0.22em] uppercase">
+                        ( GENERAL - OCTOBER 2026 )
+                    </h2>
+                </div>
+
+                <!-- 2. TASK TABS & CONTROLS SECTION -->
+                <div class="p-4 sm:p-5 space-y-5 bg-[#0e1526]">
+
+                    <!-- Task Pills Row (Default: General + "+ Add Task") -->
+                    <div class="flex flex-wrap items-center gap-2.5" id="taskTabsContainer">
+                        <!-- Dynamically rendered task tabs + "+ Add Task" button -->
+                    </div>
+
+                    <!-- Month Navigation & Stats Row -->
+                    <div class="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pt-1">
+
+                        <!-- Left: Month Selector ( <  October , 2026 [Calendar]  > ) -->
+                        <div class="flex items-center gap-3">
+                            <button onclick="changeMonth(-1)" title="Previous Month" class="w-10 h-10 rounded-full bg-[#131c31] hover:bg-[#1c2947] border border-slate-700/80 text-slate-300 hover:text-white flex items-center justify-center transition">
+                                <i class="fa-solid fa-chevron-left text-xs"></i>
+                            </button>
+
+                            <div class="relative">
+                                <button onclick="toggleMonthPicker()" class="min-w-[200px] sm:min-w-[225px] px-5 py-2.5 rounded-xl bg-[#11192c] hover:bg-[#16213a] border border-slate-700/80 text-white font-bold text-sm sm:text-base flex items-center justify-between gap-3 transition shadow-inner">
+                                    <span id="currentMonthLabel" class="tracking-wide">October , 2026</span>
+                                    <i class="fa-regular fa-calendar text-slate-400 text-sm"></i>
+                                </button>
+
+                                <!-- Quick Month/Year Dropdown Popover -->
+                                <div id="monthPickerPopover" class="hidden absolute left-0 top-13 mt-2 w-72 bg-[#11192e] border border-sky-500/40 rounded-xl shadow-2xl p-4 z-50">
+                                    <div class="flex items-center justify-between mb-3">
+                                        <button onclick="changeYear(-1)" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200"><i class="fa-solid fa-angles-left"></i></button>
+                                        <span id="pickerYearLabel" class="font-bold text-sky-400 text-sm">2026</span>
+                                        <button onclick="changeYear(1)" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200"><i class="fa-solid fa-angles-right"></i></button>
+                                    </div>
+                                    <div id="pickerMonthsGrid" class="grid grid-cols-3 gap-1.5 text-xs">
+                                        <!-- Populated by JS -->
+                                    </div>
+                                    <div class="mt-3 pt-2.5 border-t border-slate-800 flex justify-between">
+                                        <button onclick="jumpToOct2026()" class="text-[11px] text-sky-400 hover:underline font-medium">Jump to Oct 25, 2026</button>
+                                        <button onclick="toggleMonthPicker()" class="text-[11px] text-slate-400 hover:text-white">Close</button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <button onclick="changeMonth(1)" title="Next Month" class="w-10 h-10 rounded-full bg-[#131c31] hover:bg-[#1c2947] border border-slate-700/80 text-slate-300 hover:text-white flex items-center justify-center transition">
+                                <i class="fa-solid fa-chevron-right text-xs"></i>
+                            </button>
+                        </div>
+
+                        <!-- Right: COMPLETED | NOT COMPLETED | SKIPPED | SUCCESS RATE | GRAPH -->
+                        <div class="flex flex-wrap items-center gap-2 sm:gap-3">
+
+                            <!-- COMPLETED (Green) Box - Clickable to open Graph Drilldown -->
+                            <div onclick="openGraphModal('completed')" title="Click to view Completed dates" class="stat-completed px-4 py-2 rounded-xl min-w-[105px] text-center shadow-sm cursor-pointer hover:scale-[1.02] transition">
+                                <div class="text-[10px] font-extrabold uppercase tracking-widest text-emerald-400">COMPLETED</div>
+                                <div id="statCompleted" class="text-xl sm:text-2xl font-black text-white mt-0.5">0</div>
+                            </div>
+
+                            <!-- NOT COMPLETED (Red) Box -->
+                            <div onclick="openGraphModal('not_completed')" title="Click to view Not Completed dates" class="stat-not-completed px-4 py-2 rounded-xl min-w-[115px] text-center shadow-sm cursor-pointer hover:scale-[1.02] transition">
+                                <div class="text-[10px] font-extrabold uppercase tracking-widest text-rose-400">NOT COMPLETED</div>
+                                <div id="statNotCompleted" class="text-xl sm:text-2xl font-black text-white mt-0.5">0</div>
+                            </div>
+
+                            <!-- SKIPPED (Yellow) Box -->
+                            <div onclick="openGraphModal('skipped')" title="Click to view Skipped dates" class="stat-skipped px-4 py-2 rounded-xl min-w-[95px] text-center shadow-sm cursor-pointer hover:scale-[1.02] transition">
+                                <div class="text-[10px] font-extrabold uppercase tracking-widest text-amber-400">SKIPPED</div>
+                                <div id="statSkipped" class="text-xl sm:text-2xl font-black text-white mt-0.5">0</div>
+                            </div>
+
+                            <!-- SUCCESS RATE Box -->
+                            <div class="stat-rate px-4 py-2 rounded-xl min-w-[115px] text-center shadow-sm">
+                                <div class="text-[10px] font-extrabold uppercase tracking-widest text-sky-400">SUCCESS RATE</div>
+                                <div id="statSuccessRate" class="text-xl sm:text-2xl font-black text-white mt-0.5">0%</div>
+                            </div>
+
+                            <!-- GRAPH Button -->
+                            <button onclick="openGraphModal('all')" class="btn-graph px-4 py-2.5 rounded-xl min-w-[72px] flex flex-col items-center justify-center gap-1 transition shadow-sm cursor-pointer">
+                                <i class="fa-solid fa-chart-pie text-indigo-400 text-sm"></i>
+                                <span class="text-[9px] font-extrabold uppercase tracking-widest text-indigo-300">GRAPH</span>
+                            </button>
+                        </div>
+
+                    </div>
+                </div>
+
+                <!-- 3. CYAN DOUBLE SEPARATOR LINE -->
+                <div class="cyan-double-line"></div>
+
+                <!-- 4. YELLOW DAYS OF WEEK HEADER (SUN - SAT) -->
+                <div class="grid grid-cols-7 yellow-day-header border-b border-black/40">
+                    <div class="py-2.5 text-center font-black text-xs sm:text-sm border-r border-black/15">SUN</div>
+                    <div class="py-2.5 text-center font-black text-xs sm:text-sm border-r border-black/15">MON</div>
+                    <div class="py-2.5 text-center font-black text-xs sm:text-sm border-r border-black/15">TUE</div>
+                    <div class="py-2.5 text-center font-black text-xs sm:text-sm border-r border-black/15">WED</div>
+                    <div class="py-2.5 text-center font-black text-xs sm:text-sm border-r border-black/15">THU</div>
+                    <div class="py-2.5 text-center font-black text-xs sm:text-sm border-r border-black/15">FRI</div>
+                    <div class="py-2.5 text-center font-black text-xs sm:text-sm">SAT</div>
+                </div>
+
+                <!-- 5. 6x7 CALENDAR GRID WITH CIRCULAR DATES -->
+                <div id="calendarGrid" class="grid grid-cols-7 bg-[#0b101d]">
+                    <!-- Populated dynamically by JavaScript (42 cells with circular date badges) -->
+                </div>
+
+                <!-- 6. FOOTER HELPER BAR -->
+                <div class="bg-[#0a0f1d] border-t border-slate-800/80 px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
+                    <div class="flex flex-wrap items-center gap-4">
+                        <span class="flex items-center gap-1.5 font-medium text-emerald-400"><span class="w-3.5 h-3.5 rounded-full bg-emerald-500 inline-flex items-center justify-center text-[9px] text-white font-bold">✓</span> Green = Completed</span>
+                        <span class="flex items-center gap-1.5 font-medium text-rose-400"><span class="w-3.5 h-3.5 rounded-full bg-rose-500 inline-flex items-center justify-center text-[9px] text-white font-bold">✕</span> Red = Not Completed</span>
+                        <span class="flex items-center gap-1.5 font-medium text-amber-400"><span class="w-3.5 h-3.5 rounded-full bg-amber-400 inline-flex items-center justify-center text-[9px] text-slate-950 font-bold">−</span> Yellow = Skipped</span>
+                        <span class="flex items-center gap-1.5"><span class="w-3.5 h-3.5 rounded-full border-2 border-sky-400 inline-block"></span> Selected Date</span>
+                    </div>
+                    <div class="no-print flex flex-wrap items-center gap-3">
+                        <button onclick="markAllMonth('completed')" class="text-emerald-400 hover:underline font-semibold">Mark All Completed</button>
+                        <span>•</span>
+                        <button onclick="openGraphModal('all')" class="text-indigo-400 hover:underline font-semibold">View Interactive Graph</button>
+                        <span>•</span>
+                        <button onclick="clearCurrentTaskMonth()" class="text-rose-400 hover:underline font-semibold">Clear Month</button>
+                    </div>
+                </div>
+
+            </div>
+        </main>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- MODAL 0: SIGN IN / SIGN UP (EMAIL & PASSWORD AUTHENTICATION) -->
+    <!-- ========================================== -->
+    <div id="authModal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div class="bg-[#0f172a] border border-sky-500/50 rounded-2xl max-w-md w-full overflow-hidden shadow-2xl">
+            <div class="cyan-banner px-5 py-3.5 flex items-center justify-between">
+                <h3 class="font-serif font-black text-slate-950 text-sm sm:text-base uppercase tracking-wider flex items-center gap-2">
+                    <i class="fa-solid fa-shield-lock"></i> Personal Dashboard Access
+                </h3>
+                <button onclick="closeAuthModal()" class="w-7 h-7 rounded-full bg-black/20 hover:bg-black/40 text-slate-950 flex items-center justify-center transition">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <div class="p-5 space-y-4">
+                <!-- Current Signed-In Status Banner (if logged in with email) -->
+                <div id="currentAccountBanner" class="hidden bg-emerald-950/60 border border-emerald-500/40 rounded-xl p-3.5 flex items-center justify-between gap-3">
+                    <div class="min-w-0">
+                        <div class="text-[10px] font-bold uppercase tracking-wider text-emerald-400">Signed In Account</div>
+                        <div id="currentAccountEmail" class="text-xs sm:text-sm font-bold text-white truncate">user@example.com</div>
+                    </div>
+                    <button type="button" onclick="handleLogoutAccount()" class="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold uppercase tracking-wider shrink-0 transition">
+                        Sign Out
+                    </button>
+                </div>
+
+                <!-- Sign In / Sign Up Mode Switch Tabs -->
+                <div class="grid grid-cols-2 gap-2 p-1 bg-[#090e1a] rounded-xl border border-slate-800">
+                    <button type="button" id="tabSignInBtn" onclick="switchAuthTab('signin')" class="py-2 rounded-lg text-xs font-bold uppercase tracking-wider bg-sky-500 text-slate-950 transition">
+                        Sign In
+                    </button>
+                    <button type="button" id="tabSignUpBtn" onclick="switchAuthTab('signup')" class="py-2 rounded-lg text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white transition">
+                        Sign Up (New User)
+                    </button>
+                </div>
+
+                <p id="authModeDescription" class="text-xs text-slate-400 leading-relaxed">
+                    Sign in with your email and password to load your personal tasks, profile, and calendar progress from any device.
+                </p>
+
+                <!-- Auth Error/Info Alert -->
+                <div id="authErrorBox" class="hidden p-3 rounded-xl bg-rose-950/80 border border-rose-500/50 text-rose-300 text-xs font-medium"></div>
+
+                <form id="authForm" onsubmit="handleAuthSubmit(event)" class="space-y-3.5">
+                    <!-- Sign Up Extra Fields (Main Name XXX & Surname/Title YYY) -->
+                    <div id="signUpExtraFields" class="hidden grid grid-cols-2 gap-2.5">
+                        <div>
+                            <label class="block text-[11px] font-bold uppercase tracking-wider text-slate-300 mb-1">Main Name</label>
+                            <input id="authMainName" type="text" placeholder="XXX" value="XXX" class="w-full px-3 py-2 rounded-lg bg-[#090e1a] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-bold uppercase tracking-wider text-slate-300 mb-1">Surname / Title</label>
+                            <input id="authSurname" type="text" placeholder="YYY" value="YYY" class="w-full px-3 py-2 rounded-lg bg-[#090e1a] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400">
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-[11px] font-bold uppercase tracking-wider text-slate-300 mb-1">Email Address *</label>
+                        <input id="authEmailInput" type="email" required placeholder="you@example.com" class="w-full px-3.5 py-2.5 rounded-lg bg-[#090e1a] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400">
+                    </div>
+
+                    <div>
+                        <label class="block text-[11px] font-bold uppercase tracking-wider text-slate-300 mb-1">Password *</label>
+                        <input id="authPasswordInput" type="password" required minlength="6" placeholder="Minimum 6 characters" class="w-full px-3.5 py-2.5 rounded-lg bg-[#090e1a] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400">
+                    </div>
+
+                    <div class="pt-1 flex items-center justify-end gap-2.5">
+                        <button type="button" onclick="closeAuthModal()" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold">Close</button>
+                        <button type="submit" id="authSubmitBtn" class="px-6 py-2.5 rounded-lg bg-gradient-to-r from-sky-500 to-cyan-500 hover:from-sky-400 hover:to-cyan-400 text-slate-950 text-xs font-black uppercase tracking-wider shadow-lg shadow-sky-500/20">
+                            Sign In to Dashboard
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- MODAL 1: EDIT USER PROFILE (MAIN NAME XXX, SURNAME/TITLE YYY, PHOTO, EMAIL, PHONE) -->
+    <!-- ========================================== -->
+    <div id="profileModal" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+        <div class="bg-[#0f172a] border border-sky-500/40 rounded-2xl max-w-md w-full overflow-hidden shadow-2xl">
+            <div class="cyan-banner px-5 py-3.5 flex items-center justify-between">
+                <h3 class="font-serif font-black text-slate-950 text-base uppercase tracking-wider flex items-center gap-2">
+                    <i class="fa-solid fa-id-badge"></i> Edit Your Profile Details
+                </h3>
+                <button onclick="closeProfileModal()" class="w-7 h-7 rounded-full bg-black/20 hover:bg-black/40 text-slate-950 flex items-center justify-center transition">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <form onsubmit="saveProfileChanges(event)" class="p-5 space-y-4">
+                <!-- Photo Preview & Upload / Preset Avatars -->
+                <div class="flex flex-col items-center gap-3 pb-2 border-b border-slate-800">
+                    <div class="relative">
+                        <img id="modalPhotoPreview" src="" alt="Preview" class="w-20 h-20 rounded-full object-cover border-2 border-sky-400 bg-slate-900">
+                        <label for="modalPhotoInput" class="cursor-pointer absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-sky-500 hover:bg-sky-400 text-slate-950 flex items-center justify-center shadow">
+                            <i class="fa-solid fa-upload text-xs"></i>
+                            <input id="modalPhotoInput" type="file" accept="image/*" class="hidden" onchange="handlePhotoFileSelect(event)">
+                        </label>
+                    </div>
+                    <div class="text-center">
+                        <p class="text-[11px] text-slate-400 mb-1.5">Upload your photo or pick an avatar preset:</p>
+                        <div class="flex items-center justify-center gap-2">
+                            <button type="button" onclick="selectPresetAvatar('https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80')" class="w-8 h-8 rounded-full overflow-hidden border border-slate-600 hover:border-sky-400"><img src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=120&q=80" class="w-full h-full object-cover"></button>
+                            <button type="button" onclick="selectPresetAvatar('https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=300&q=80')" class="w-8 h-8 rounded-full overflow-hidden border border-slate-600 hover:border-sky-400"><img src="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=120&q=80" class="w-full h-full object-cover"></button>
+                            <button type="button" onclick="selectPresetAvatar('https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=300&q=80')" class="w-8 h-8 rounded-full overflow-hidden border border-slate-600 hover:border-sky-400"><img src="https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=120&q=80" class="w-full h-full object-cover"></button>
+                            <button type="button" onclick="selectPresetAvatar('https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=300&q=80')" class="w-8 h-8 rounded-full overflow-hidden border border-slate-600 hover:border-sky-400"><img src="https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=120&q=80" class="w-full h-full object-cover"></button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Main Name *</label>
+                        <input id="inputProfileMainName" type="text" required placeholder="XXX" class="w-full px-3.5 py-2 rounded-lg bg-[#090e1a] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Surname / Title *</label>
+                        <input id="inputProfileSurname" type="text" required placeholder="YYY" class="w-full px-3.5 py-2 rounded-lg bg-[#090e1a] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400">
+                    </div>
+                </div>
+                <p class="text-[11px] text-slate-400 -mt-2">Header Preview: "<span id="previewHeaderName" class="text-sky-400 font-semibold">XXX YYY</span>’s Target Tracker"</p>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Email ID *</label>
+                        <input id="inputProfileEmail" type="email" required placeholder="xxx.yyy@example.com" class="w-full px-3.5 py-2 rounded-lg bg-[#090e1a] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Phone Number *</label>
+                        <input id="inputProfilePhone" type="text" required placeholder="+91 98765 43210" class="w-full px-3.5 py-2 rounded-lg bg-[#090e1a] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Custom Photo URL (Optional)</label>
+                    <input id="inputProfilePhotoUrl" type="text" placeholder="Paste image link or use upload button above" class="w-full px-3.5 py-2 rounded-lg bg-[#090e1a] border border-slate-700 text-slate-300 text-xs focus:outline-none focus:border-sky-400">
+                </div>
+
+                <div class="flex items-center justify-end gap-2.5 pt-2">
+                    <button type="button" onclick="closeProfileModal()" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold">Cancel</button>
+                    <button type="submit" class="px-5 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold uppercase tracking-wider shadow-lg shadow-sky-500/20">Save Profile</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- MODAL 2: ADD NEW TASK MODAL -->
+    <!-- ========================================== -->
+    <div id="addTaskModal" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+        <div class="bg-[#0f172a] border border-emerald-500/40 rounded-2xl max-w-sm w-full overflow-hidden shadow-2xl">
+            <div class="bg-gradient-to-r from-emerald-600 to-teal-600 px-5 py-3 flex items-center justify-between">
+                <h3 class="font-serif font-bold text-white text-sm uppercase tracking-wider flex items-center gap-2">
+                    <i class="fa-solid fa-plus-circle"></i> Create Additional Task
+                </h3>
+                <button onclick="closeAddTaskModal()" class="text-white/80 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <form onsubmit="handleAddTaskSubmit(event)" class="p-5 space-y-4">
+                <div>
+                    <label class="block text-xs font-bold uppercase tracking-wider text-slate-300 mb-1.5">Task / Habit Name</label>
+                    <input id="newTaskNameInput" type="text" required maxlength="28" placeholder="e.g. Science, Fitness, Reading, Coding" class="w-full px-3.5 py-2.5 rounded-lg bg-[#090e1a] border border-slate-700 text-white text-sm focus:outline-none focus:border-emerald-400">
+                </div>
+                <div class="flex items-center justify-end gap-2">
+                    <button type="button" onclick="closeAddTaskModal()" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold">Cancel</button>
+                    <button type="submit" class="px-5 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold uppercase tracking-wider">Add Task</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- MODAL 3: DAILY NOTE & 3-STATUS SELECTOR MODAL -->
+    <!-- ========================================== -->
+    <div id="dayNoteModal" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+        <div class="bg-[#0f172a] border border-sky-500/40 rounded-2xl max-w-md w-full overflow-hidden shadow-2xl">
+            <div class="cyan-banner px-5 py-3 flex items-center justify-between">
+                <h3 id="dayNoteModalTitle" class="font-serif font-black text-slate-950 text-sm uppercase tracking-wider">
+                    October 25, 2026 - General
+                </h3>
+                <button onclick="closeDayNoteModal()" class="text-slate-950 hover:opacity-75"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="p-5 space-y-4">
+                <div>
+                    <label class="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Select Circular Date Status</label>
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        <button type="button" onclick="setModalDayStatus('completed')" class="py-2.5 px-2 rounded-xl border border-emerald-500/50 bg-emerald-950/50 text-emerald-300 font-bold text-xs flex flex-col items-center gap-1 hover:bg-emerald-900/60 transition">
+                            <span class="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center"><i class="fa-solid fa-check text-xs"></i></span>
+                            <span>Completed</span>
+                        </button>
+                        <button type="button" onclick="setModalDayStatus('not_completed')" class="py-2.5 px-2 rounded-xl border border-rose-500/50 bg-rose-950/50 text-rose-300 font-bold text-xs flex flex-col items-center gap-1 hover:bg-rose-900/60 transition">
+                            <span class="w-6 h-6 rounded-full bg-rose-500 text-white flex items-center justify-center"><i class="fa-solid fa-xmark text-xs"></i></span>
+                            <span>Not Completed</span>
+                        </button>
+                        <button type="button" onclick="setModalDayStatus('skipped')" class="py-2.5 px-2 rounded-xl border border-amber-500/50 bg-amber-950/50 text-amber-300 font-bold text-xs flex flex-col items-center gap-1 hover:bg-amber-900/60 transition">
+                            <span class="w-6 h-6 rounded-full bg-amber-400 text-slate-950 flex items-center justify-center"><i class="fa-solid fa-forward-step text-xs"></i></span>
+                            <span>Skipped</span>
+                        </button>
+                        <button type="button" onclick="setModalDayStatus(null)" class="py-2.5 px-2 rounded-xl border border-slate-700 bg-slate-800/50 text-slate-300 font-bold text-xs flex flex-col items-center gap-1 hover:bg-slate-700 transition">
+                            <span class="w-6 h-6 rounded-full border border-slate-500 flex items-center justify-center"><i class="fa-regular fa-circle text-xs"></i></span>
+                            <span>Clear</span>
+                        </button>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1.5">Daily Details / Note</label>
+                    <textarea id="dayNoteInput" rows="2" maxlength="120" placeholder="Add details about what you completed, missed, or why this day was skipped..." class="w-full px-3.5 py-2 rounded-lg bg-[#090e1a] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400"></textarea>
+                </div>
+                <div class="flex justify-end gap-2 pt-1">
+                    <button type="button" onclick="closeDayNoteModal()" class="px-4 py-2 rounded-lg bg-slate-800 text-slate-300 text-xs font-semibold">Close</button>
+                    <button type="button" onclick="saveDayNote()" class="px-5 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold uppercase">Save Details</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- MODAL 4: INTERACTIVE MONTHLY GRAPH MODAL WITH CLICKABLE DRILL-DOWN DETAILS -->
+    <!-- ========================================== -->
+    <div id="graphModal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
+        <div class="bg-[#0d1424] border border-indigo-500/50 rounded-2xl max-w-3xl w-full max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+            <!-- Header -->
+            <div class="bg-gradient-to-r from-indigo-600 via-purple-600 to-sky-600 px-5 py-3.5 flex items-center justify-between shrink-0">
+                <div>
+                    <h3 class="font-serif font-bold text-white text-sm sm:text-base uppercase tracking-wider flex items-center gap-2">
+                        <i class="fa-solid fa-chart-column"></i> Interactive Monthly Graph & Date Details
+                    </h3>
+                    <p id="graphModalSubheader" class="text-[11px] text-indigo-100 font-medium mt-0.5">
+                        Click any bar or status card below to inspect the exact dates and notes.
+                    </p>
+                </div>
+                <button onclick="closeGraphModal()" class="w-8 h-8 rounded-full bg-black/25 hover:bg-black/40 text-white flex items-center justify-center transition">
+                    <i class="fa-solid fa-xmark text-base"></i>
+                </button>
+            </div>
+
+            <!-- Scrollable Body -->
+            <div class="p-4 sm:p-6 space-y-5 overflow-y-auto">
+                
+                <!-- 1. Interactive Visual Bar Chart for Active Task (Completed / Not Completed / Skipped) -->
+                <div class="bg-[#11192e] border border-slate-800 rounded-xl p-4">
+                    <div class="flex flex-wrap items-center justify-between gap-2 mb-4">
+                        <span id="graphActiveTaskTitle" class="text-xs sm:text-sm font-extrabold uppercase tracking-wider text-sky-400">
+                            General — October 2026 Breakdown
+                        </span>
+                        <span class="text-[11px] text-slate-400">
+                            <i class="fa-solid fa-hand-pointer text-sky-400 mr-1"></i>Click any bar or card to filter dates
+                        </span>
+                    </div>
+
+                    <!-- 3 Interactive Visual Columns + Horizontal Bars -->
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-3" id="interactiveGraphCards">
+                        <!-- Completed Card/Bar -->
+                        <button type="button" onclick="filterGraphDates('completed')" id="graphCard_completed" class="text-left p-3.5 rounded-xl bg-emerald-950/35 border-2 border-emerald-500/40 hover:border-emerald-400 transition group">
+                            <div class="flex items-center justify-between mb-1.5">
+                                <span class="text-xs font-extrabold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
+                                    <span class="w-3 h-3 rounded-full bg-emerald-500 inline-block"></span> Completed
+                                </span>
+                                <span id="graphPctCompleted" class="text-xs font-bold text-emerald-300">0%</span>
+                            </div>
+                            <div class="flex items-baseline justify-between mb-2">
+                                <span id="graphCountCompleted" class="text-2xl font-black text-white">0</span>
+                                <span class="text-[11px] text-slate-400 group-hover:text-emerald-300">View dates →</span>
+                            </div>
+                            <div class="w-full h-3 rounded-full bg-slate-900 overflow-hidden">
+                                <div id="graphBarCompleted" class="h-full bg-gradient-to-r from-emerald-500 to-teal-400 transition-all duration-500" style="width: 0%"></div>
+                            </div>
+                        </button>
+
+                        <!-- Not Completed Card/Bar -->
+                        <button type="button" onclick="filterGraphDates('not_completed')" id="graphCard_not_completed" class="text-left p-3.5 rounded-xl bg-rose-950/35 border-2 border-rose-500/40 hover:border-rose-400 transition group">
+                            <div class="flex items-center justify-between mb-1.5">
+                                <span class="text-xs font-extrabold uppercase tracking-wider text-rose-400 flex items-center gap-1.5">
+                                    <span class="w-3 h-3 rounded-full bg-rose-500 inline-block"></span> Not Completed
+                                </span>
+                                <span id="graphPctNotCompleted" class="text-xs font-bold text-rose-300">0%</span>
+                            </div>
+                            <div class="flex items-baseline justify-between mb-2">
+                                <span id="graphCountNotCompleted" class="text-2xl font-black text-white">0</span>
+                                <span class="text-[11px] text-slate-400 group-hover:text-rose-300">View dates →</span>
+                            </div>
+                            <div class="w-full h-3 rounded-full bg-slate-900 overflow-hidden">
+                                <div id="graphBarNotCompleted" class="h-full bg-gradient-to-r from-rose-500 to-red-500 transition-all duration-500" style="width: 0%"></div>
+                            </div>
+                        </button>
+
+                        <!-- Skipped Card/Bar -->
+                        <button type="button" onclick="filterGraphDates('skipped')" id="graphCard_skipped" class="text-left p-3.5 rounded-xl bg-amber-950/35 border-2 border-amber-500/40 hover:border-amber-400 transition group">
+                            <div class="flex items-center justify-between mb-1.5">
+                                <span class="text-xs font-extrabold uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
+                                    <span class="w-3 h-3 rounded-full bg-amber-400 inline-block"></span> Skipped
+                                </span>
+                                <span id="graphPctSkipped" class="text-xs font-bold text-amber-300">0%</span>
+                            </div>
+                            <div class="flex items-baseline justify-between mb-2">
+                                <span id="graphCountSkipped" class="text-2xl font-black text-white">0</span>
+                                <span class="text-[11px] text-slate-400 group-hover:text-amber-300">View dates →</span>
+                            </div>
+                            <div class="w-full h-3 rounded-full bg-slate-900 overflow-hidden">
+                                <div id="graphBarSkipped" class="h-full bg-gradient-to-r from-amber-400 to-yellow-500 transition-all duration-500" style="width: 0%"></div>
+                            </div>
+                        </button>
+                    </div>
+
+                    <!-- Combined Proportional Distribution Bar -->
+                    <div class="mt-4">
+                        <div class="flex justify-between text-[11px] text-slate-400 mb-1">
+                            <span>Monthly Distribution Bar (Click segments to inspect)</span>
+                            <button type="button" onclick="filterGraphDates('all')" class="text-sky-400 hover:underline font-semibold">Show All Marked Dates</button>
+                        </div>
+                        <div class="w-full h-5 rounded-full bg-slate-900 overflow-hidden flex border border-slate-800 p-0.5 gap-0.5">
+                            <div id="multiSegmentCompleted" onclick="filterGraphDates('completed')" class="h-full bg-emerald-500 hover:opacity-90 cursor-pointer transition-all duration-500 rounded-l-full" style="width: 0%" title="Click to view Completed dates"></div>
+                            <div id="multiSegmentNotCompleted" onclick="filterGraphDates('not_completed')" class="h-full bg-rose-500 hover:opacity-90 cursor-pointer transition-all duration-500" style="width: 0%" title="Click to view Not Completed dates"></div>
+                            <div id="multiSegmentSkipped" onclick="filterGraphDates('skipped')" class="h-full bg-amber-400 hover:opacity-90 cursor-pointer transition-all duration-500 rounded-r-full" style="width: 0%" title="Click to view Skipped dates"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 2. Drill-Down Relevant Dates & Details List -->
+                <div class="bg-[#11192e] border border-slate-800 rounded-xl p-4">
+                    <div class="flex flex-wrap items-center justify-between gap-2 mb-3 pb-2 border-b border-slate-800">
+                        <h4 id="drilldownHeaderTitle" class="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
+                            <i class="fa-solid fa-calendar-check text-sky-400"></i>
+                            <span>Relevant Dates & Details</span>
+                        </h4>
+                        <div class="flex items-center gap-1.5 text-[11px]">
+                            <button onclick="filterGraphDates('all')" id="pillFilter_all" class="px-2.5 py-1 rounded-md bg-sky-500 text-slate-950 font-bold">All</button>
+                            <button onclick="filterGraphDates('completed')" id="pillFilter_completed" class="px-2.5 py-1 rounded-md bg-slate-800 text-emerald-400 font-semibold">Completed</button>
+                            <button onclick="filterGraphDates('not_completed')" id="pillFilter_not_completed" class="px-2.5 py-1 rounded-md bg-slate-800 text-rose-400 font-semibold">Not Completed</button>
+                            <button onclick="filterGraphDates('skipped')" id="pillFilter_skipped" class="px-2.5 py-1 rounded-md bg-slate-800 text-amber-400 font-semibold">Skipped</button>
+                        </div>
+                    </div>
+
+                    <div id="graphDrilldownList" class="space-y-2 max-h-60 overflow-y-auto pr-1">
+                        <!-- Dynamically populated list of dates & notes when user clicks graph -->
+                    </div>
+                </div>
+
+                <!-- 3. All Tasks Comparison Summary -->
+                <div class="bg-[#11192e] border border-slate-800 rounded-xl p-4">
+                    <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">All Tasks Comparison (<span id="graphComparisonMonth">October 2026</span>)</h4>
+                    <div id="graphAllTasksComparison" class="space-y-2.5">
+                        <!-- Populated dynamically -->
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- MODAL 5: ACCOUNT & RESET MODAL -->
+    <!-- ========================================== -->
+    <div id="resetModal" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+        <div class="bg-[#121829] border border-rose-500/40 rounded-2xl max-w-sm w-full p-5 text-center space-y-4 shadow-2xl">
+            <div class="w-12 h-12 rounded-full bg-rose-500/15 border border-rose-500/30 text-rose-400 flex items-center justify-center mx-auto">
+                <i class="fa-solid fa-power-off text-lg"></i>
+            </div>
+            <h3 class="font-serif font-bold text-white text-base">Account & Reset Options</h3>
+            <p class="text-xs text-slate-400 leading-relaxed">
+                Manage your account session or clear calendar marks for <strong id="resetTaskLabel" class="text-sky-400">General</strong>.
+            </p>
+            <div class="flex flex-col gap-2 pt-1">
+                <button onclick="closeResetModal(); openAuthModal();" class="w-full py-2.5 rounded-lg bg-sky-600/25 hover:bg-sky-600/40 border border-sky-500/40 text-sky-300 text-xs font-bold uppercase">
+                    <i class="fa-solid fa-user-shield mr-1"></i> Switch Account / Sign Out
+                </button>
+                <button onclick="clearCurrentTaskMonth(); closeResetModal();" class="w-full py-2 rounded-lg bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/40 text-amber-300 text-xs font-bold uppercase">
+                    Clear Current Task & Month
+                </button>
+                <button onclick="resetEntireApp()" class="w-full py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold uppercase">
+                    Reset Dashboard to Default
+                </button>
+                <button onclick="closeResetModal()" class="w-full py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- TOAST NOTIFICATION -->
+    <div id="toastNotification" class="fixed bottom-5 right-5 z-50 hidden bg-[#111c35] border border-sky-500/50 text-white px-4 py-2.5 rounded-xl shadow-2xl text-xs font-semibold flex items-center gap-2.5">
+        <i class="fa-solid fa-circle-check text-emerald-400"></i>
+        <span id="toastMessage">Saved successfully!</span>
+    </div>
+
+    <!-- FIREBASE CLOUD AUTH & FIRESTORE DATABASE MODULE -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            signInWithCustomToken, 
+            onAuthStateChanged, 
+            createUserWithEmailAndPassword, 
+            signInWithEmailAndPassword, 
+            signOut 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            doc, 
+            setDoc, 
+            getDoc, 
+            onSnapshot 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'monthly-target-tracker-app';
+        let db = null;
+        let auth = null;
+        let currentUser = null;
+        let unsubscribeSnapshot = null;
+
+        // Deterministic email-keyed path so logging in with the same email & password on any session/device
+        // always resolves to the user's exact personal dashboard in Firestore
+        function getUserDashboardDocRef(uid, email) {
+            if (email) {
+                const safeEmailKey = email.trim().toLowerCase().replace(/[^a-z0-9]/g, '_');
+                return doc(db, 'artifacts', appId, 'public', 'data', 'userDashboards', `acct_${safeEmailKey}`);
+            }
+            return doc(db, 'artifacts', appId, 'users', uid, 'trackerData', 'main');
+        }
+
+        async function initFirebaseCloud() {
+            try {
+                if (typeof __firebase_config === 'undefined' || !__firebase_config) {
+                    window.updateSyncIndicator('ready', 'Ready');
+                    return;
+                }
+                const firebaseConfig = JSON.parse(__firebase_config);
+                const app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+
+                // Mandatory RULE 3: Authenticate first before any Firestore operations
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                onAuthStateChanged(auth, (user) => {
+                    currentUser = user;
+                    if (user) {
+                        const activeEmail = window.getCurrentSignedInEmail();
+                        window.updateAuthHeaderUI(user, activeEmail);
+                        subscribeToUserDashboard(user.uid, activeEmail);
+                    }
+                });
+            } catch (err) {
+                console.error("Cloud initialization error:", err);
+                window.updateSyncIndicator('error', 'Offline Mode');
+            }
+        }
+
+        function subscribeToUserDashboard(uid, email) {
+            if (!db || !currentUser) return;
+            if (unsubscribeSnapshot) {
+                unsubscribeSnapshot();
+                unsubscribeSnapshot = null;
+            }
+
+            window.updateSyncIndicator('syncing', 'Syncing...');
+            const docRef = getUserDashboardDocRef(uid, email);
+
+            unsubscribeSnapshot = onSnapshot(docRef, (snapshot) => {
+                if (snapshot.exists()) {
+                    const cloudData = snapshot.data();
+                    window.applyCloudDashboardData(cloudData);
+                    window.updateSyncIndicator('synced', email ? `Synced (${email.split('@')[0]})` : 'Cloud Synced');
+                } else {
+                    // Initialize new personal dashboard document for this user
+                    window.saveDashboardToCloud();
+                }
+            }, (err) => {
+                console.error("Snapshot listener error:", err);
+                window.updateSyncIndicator('error', 'Sync Error');
+            });
+        }
+
+        // Expose Cloud Save function to main application script
+        window.saveDashboardToCloud = async function () {
+            if (!db || !currentUser) return;
+            try {
+                window.updateSyncIndicator('syncing', 'Saving...');
+                const activeEmail = window.getCurrentSignedInEmail();
+                const docRef = getUserDashboardDocRef(currentUser.uid, activeEmail);
+                const payload = window.getSerializableStateForCloud();
+                await setDoc(docRef, payload, { merge: true });
+                window.updateSyncIndicator('synced', activeEmail ? `Synced (${activeEmail.split('@')[0]})` : 'Cloud Synced');
+            } catch (err) {
+                console.error("Save to cloud error:", err);
+                window.updateSyncIndicator('error', 'Save Retry');
+            }
+        };
+
+        // Handle Email & Password Sign Up / Sign In (Supports both native Firebase Email Auth & Credential-Protected Firestore Accounts)
+        window.performEmailPasswordAuth = async function (mode, email, password, mainName, surname) {
+            const cleanEmail = email.trim().toLowerCase();
+            if (!db || !currentUser) {
+                throw new Error("Cloud connection is initializing. Please try again in a moment.");
+            }
+
+            const accountDocRef = getUserDashboardDocRef(currentUser.uid, cleanEmail);
+            const snap = await getDoc(accountDocRef);
+
+            if (mode === 'signup') {
+                if (snap.exists() && snap.data().accountPasswordHash) {
+                    throw new Error("An account with this email already exists. Please switch to Sign In.");
+                }
+                // Try native Firebase Email Auth if enabled, otherwise use secure Firestore account
+                try {
+                    await createUserWithEmailAndPassword(auth, cleanEmail, password);
+                } catch (authErr) {
+                    // Fallback if Email/Password provider is not enabled in environment console
+                }
+
+                const freshDashboard = window.createFreshUserDashboard(cleanEmail, mainName || 'XXX', surname || 'YYY', password);
+                await setDoc(accountDocRef, freshDashboard);
+                window.setCurrentSignedInEmail(cleanEmail);
+                window.applyCloudDashboardData(freshDashboard);
+                subscribeToUserDashboard(currentUser.uid, cleanEmail);
+                return { email: cleanEmail, isNew: true };
+            } else {
+                // Sign In Mode
+                if (!snap.exists()) {
+                    throw new Error("No account found with this email. Please click 'Sign Up (New User)' first.");
+                }
+                const data = snap.data();
+                if (data.accountPasswordHash && data.accountPasswordHash !== btoa(password)) {
+                    throw new Error("Incorrect password. Please check your password and try again.");
+                }
+                try {
+                    await signInWithEmailAndPassword(auth, cleanEmail, password);
+                } catch (authErr) {
+                    // Continue with verified Firestore account
+                }
+                window.setCurrentSignedInEmail(cleanEmail);
+                window.applyCloudDashboardData(data);
+                subscribeToUserDashboard(currentUser.uid, cleanEmail);
+                return { email: cleanEmail, isNew: false };
+            }
+        };
+
+        window.performAccountSignOut = async function () {
+            window.setCurrentSignedInEmail(null);
+            window.resetToDefaultGuestDashboard();
+            if (currentUser) {
+                subscribeToUserDashboard(currentUser.uid, null);
+            }
+        };
+
+        initFirebaseCloud();
+    </script>
+
+    <!-- MAIN APPLICATION SCRIPT -->
+    <script>
+        const MONTH_NAMES = [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"
+        ];
+        const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+        // Default Application State:
+        // - Main Name = XXX, Surname/Title = YYY
+        // - Default Task = General
+        // - October 2026 with Day 25 highlighted
+        const DEFAULT_STATE = {
+            profile: {
+                mainName: "XXX",
+                surname: "YYY",
+                email: "xxx.yyy@example.com",
+                phone: "+91 98765 43210",
+                photo: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80"
+            },
+            tasks: ["General"],
+            activeTask: "General",
+            currentYear: 2026,
+            currentMonth: 9, // 9 = October
+            selectedDay: 25,
+            // records key format: `${taskName}__${year}-${month}__${day}`
+            // status values: 'completed' (Green) | 'not_completed' (Red) | 'skipped' (Yellow) | null
+            records: {},
+            accountPasswordHash: null
+        };
+
+        let appState = JSON.parse(JSON.stringify(DEFAULT_STATE));
+        let editingDayNumber = null;
+        let currentGraphFilter = 'all';
+        let authModalMode = 'signin';
+        let signedInUserEmail = null;
+        let isApplyingCloudUpdate = false;
+
+        // Normalize legacy status values ('met' -> 'completed', 'missed' -> 'not_completed')
+        function normalizeStatus(status) {
+            if (status === 'met' || status === 'completed') return 'completed';
+            if (status === 'missed' || status === 'not_completed') return 'not_completed';
+            if (status === 'skipped') return 'skipped';
+            return null;
+        }
+
+        // Cloud Synchronization Helpers
+        window.getCurrentSignedInEmail = function () {
+            return signedInUserEmail;
+        };
+
+        window.setCurrentSignedInEmail = function (email) {
+            signedInUserEmail = email;
+            window.updateAuthHeaderUI(null, email);
+        };
+
+        window.createFreshUserDashboard = function (email, mainName, surname, rawPassword) {
+            const fresh = JSON.parse(JSON.stringify(DEFAULT_STATE));
+            fresh.profile.mainName = (mainName || "XXX").trim();
+            fresh.profile.surname = (surname || "YYY").trim();
+            fresh.profile.email = email;
+            fresh.accountPasswordHash = btoa(rawPassword);
+            return fresh;
+        };
+
+        window.resetToDefaultGuestDashboard = function () {
+            appState = JSON.parse(JSON.stringify(DEFAULT_STATE));
+            renderAll();
+        };
+
+        window.getSerializableStateForCloud = function () {
+            return {
+                profile: appState.profile,
+                tasks: appState.tasks,
+                activeTask: appState.activeTask,
+                currentYear: appState.currentYear,
+                currentMonth: appState.currentMonth,
+                selectedDay: appState.selectedDay,
+                recordsJson: JSON.stringify(appState.records || {}),
+                accountPasswordHash: appState.accountPasswordHash || null,
+                updatedAt: Date.now()
+            };
+        };
+
+        window.applyCloudDashboardData = function (cloudData) {
+            if (!cloudData) return;
+            isApplyingCloudUpdate = true;
+            try {
+                if (cloudData.profile) {
+                    appState.profile = {
+                        mainName: cloudData.profile.mainName || cloudData.profile.name || "XXX",
+                        surname: cloudData.profile.surname || cloudData.profile.role || "YYY",
+                        email: cloudData.profile.email || "xxx.yyy@example.com",
+                        phone: cloudData.profile.phone || "+91 98765 43210",
+                        photo: cloudData.profile.photo || DEFAULT_STATE.profile.photo
+                    };
+                }
+                if (Array.isArray(cloudData.tasks) && cloudData.tasks.length > 0) {
+                    appState.tasks = cloudData.tasks;
+                } else {
+                    appState.tasks = ["General"];
+                }
+                if (cloudData.activeTask && appState.tasks.includes(cloudData.activeTask)) {
+                    appState.activeTask = cloudData.activeTask;
+                } else {
+                    appState.activeTask = appState.tasks[0];
+                }
+                if (typeof cloudData.currentYear === 'number') appState.currentYear = cloudData.currentYear;
+                if (typeof cloudData.currentMonth === 'number') appState.currentMonth = cloudData.currentMonth;
+                if (typeof cloudData.selectedDay === 'number') appState.selectedDay = cloudData.selectedDay;
+                if (cloudData.accountPasswordHash) appState.accountPasswordHash = cloudData.accountPasswordHash;
+
+                if (cloudData.recordsJson) {
+                    try {
+                        appState.records = JSON.parse(cloudData.recordsJson) || {};
+                    } catch (e) {
+                        appState.records = {};
+                    }
+                } else if (cloudData.records && typeof cloudData.records === 'object') {
+                    appState.records = cloudData.records;
+                }
+                renderAll();
+            } finally {
+                isApplyingCloudUpdate = false;
+            }
+        };
+
+        function persistChanges() {
+            if (isApplyingCloudUpdate) return;
+            if (typeof window.saveDashboardToCloud === 'function') {
+                window.saveDashboardToCloud();
+            }
+        }
+
+        window.updateSyncIndicator = function (state, text) {
+            const dot = document.getElementById('syncDot');
+            const label = document.getElementById('syncText');
+            if (!dot || !label) return;
+            label.textContent = text;
+            dot.className = 'w-2 h-2 rounded-full ';
+            if (state === 'synced' || state === 'ready') {
+                dot.className += 'bg-emerald-400';
+            } else if (state === 'syncing') {
+                dot.className += 'bg-sky-400 animate-ping';
+            } else {
+                dot.className += 'bg-amber-400';
+            }
+        };
+
+        window.updateAuthHeaderUI = function (user, email) {
+            const btnText = document.getElementById('authHeaderBtnText');
+            const modeBadge = document.getElementById('accountModeBadge');
+            const banner = document.getElementById('currentAccountBanner');
+            const bannerEmail = document.getElementById('currentAccountEmail');
+
+            if (email) {
+                btnText.textContent = email.split('@')[0];
+                modeBadge.innerHTML = `<i class="fa-solid fa-cloud-check text-emerald-400"></i> ${escapeHtml(email.split('@')[0])}`;
+                if (banner && bannerEmail) {
+                    banner.classList.remove('hidden');
+                    bannerEmail.textContent = email;
+                }
+            } else {
+                btnText.textContent = 'Sign In / Sign Up';
+                modeBadge.innerHTML = `<i class="fa-solid fa-shield-halved"></i> Personal Dashboard`;
+                if (banner) banner.classList.add('hidden');
+            }
+        };
+
+        // Initialize on load
+        window.onload = function () {
+            renderAll();
+
+            // Live preview of header name inside profile modal
+            const mainNameInput = document.getElementById('inputProfileMainName');
+            const surnameInput = document.getElementById('inputProfileSurname');
+            const updateHeaderPreview = () => {
+                const m = (mainNameInput?.value || 'XXX').trim();
+                const s = (surnameInput?.value || 'YYY').trim();
+                const previewEl = document.getElementById('previewHeaderName');
+                if (previewEl) previewEl.textContent = `${m} ${s}`.trim();
+            };
+            if (mainNameInput) mainNameInput.addEventListener('input', updateHeaderPreview);
+            if (surnameInput) surnameInput.addEventListener('input', updateHeaderPreview);
+        };
+
+        // Main Render Orchestrator
+        function renderAll() {
+            renderProfileUI();
+            renderBannerAndHeader();
+            renderTaskTabs();
+            renderCalendarGrid();
+            renderStats();
+            renderSidebarOverview();
+        }
+
+        // 1. Render Profile Sidebar & Header Title (Main Name = XXX, Surname/Title = YYY)
+        function renderProfileUI() {
+            const p = appState.profile;
+            const mainName = (p.mainName || "XXX").trim();
+            const surname = (p.surname || "YYY").trim();
+            const combinedName = `${mainName} ${surname}`.trim();
+
+            document.getElementById('headerTitle').textContent = `${combinedName}’s Target Tracker`;
+            document.getElementById('profilePhotoDisplay').src = p.photo;
+            document.getElementById('profileNameDisplay').textContent = mainName;
+            document.getElementById('profileSurnameDisplay').textContent = surname;
+            document.getElementById('cardMainNameText').textContent = mainName;
+            document.getElementById('cardSurnameText').textContent = surname;
+            document.getElementById('profileEmailDisplay').textContent = p.email;
+            document.getElementById('profilePhoneDisplay').textContent = p.phone;
+        }
+
+        // 2. Render Top Cyan Banner & Month Label
+        function renderBannerAndHeader() {
+            const monthName = MONTH_NAMES[appState.currentMonth];
+            const bannerText = `( ${appState.activeTask.toUpperCase()} - ${monthName.toUpperCase()} ${appState.currentYear} )`;
+            document.getElementById('mainCyanBannerText').textContent = bannerText;
+            document.getElementById('currentMonthLabel').textContent = `${monthName} , ${appState.currentYear}`;
+            document.getElementById('sidebarMonthName').textContent = `${SHORT_MONTHS[appState.currentMonth]} ${appState.currentYear}`;
+        }
+
+        // 3. Render Task Tabs (Default = General, plus custom tasks & "+ Add Task")
+        function renderTaskTabs() {
+            const container = document.getElementById('taskTabsContainer');
+            container.innerHTML = '';
+
+            appState.tasks.forEach((taskName) => {
+                const isActive = taskName === appState.activeTask;
+                const btnWrapper = document.createElement('div');
+                btnWrapper.className = 'relative group flex items-center';
+
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.onclick = () => selectTask(taskName);
+
+                if (isActive) {
+                    btn.className = 'px-6 py-2.5 rounded-xl bg-[#0ea5e9] text-slate-950 font-bold text-xs sm:text-sm tracking-wide shadow-md shadow-sky-500/20 transition flex items-center gap-2';
+                } else {
+                    btn.className = 'px-6 py-2.5 rounded-xl bg-[#161f33] hover:bg-[#1e2a44] border border-slate-700/80 text-slate-200 font-semibold text-xs sm:text-sm tracking-wide transition flex items-center gap-2';
+                }
+
+                btn.innerHTML = `<span>${escapeHtml(taskName)}</span>`;
+
+                // Allow deleting custom tasks if more than 1 task exists
+                if (appState.tasks.length > 1) {
+                    const delSpan = document.createElement('span');
+                    delSpan.title = `Delete ${taskName}`;
+                    delSpan.className = `no-print ml-1.5 opacity-0 group-hover:opacity-100 transition text-[11px] ${isActive ? 'text-slate-900 hover:text-rose-900' : 'text-slate-400 hover:text-rose-400'}`;
+                    delSpan.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+                    delSpan.onclick = (e) => {
+                        e.stopPropagation();
+                        deleteTask(taskName);
+                    };
+                    btn.appendChild(delSpan);
+                }
+
+                btnWrapper.appendChild(btn);
+                container.appendChild(btnWrapper);
+            });
+
+            // Green "+ Add Task" Button
+            const addBtn = document.createElement('button');
+            addBtn.type = 'button';
+            addBtn.onclick = openAddTaskModal;
+            addBtn.className = 'no-print px-5 py-2.5 rounded-xl bg-[#0b1f24] hover:bg-[#0f2d33] border border-emerald-600/70 text-emerald-400 font-semibold text-xs sm:text-sm flex items-center gap-2 transition shadow-sm';
+            addBtn.innerHTML = `<i class="fa-solid fa-plus text-xs"></i><span>Add Task</span>`;
+            container.appendChild(addBtn);
+        }
+
+        // 4. Render 6x7 Calendar Grid with Circular Dates (Green = Completed, Red = Not Completed, Yellow = Skipped)
+        function renderCalendarGrid() {
+            const grid = document.getElementById('calendarGrid');
+            grid.innerHTML = '';
+
+            const year = appState.currentYear;
+            const month = appState.currentMonth;
+
+            const firstDayIndex = new Date(year, month, 1).getDay();
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+            const totalCells = 42; // 6 rows x 7 columns
+
+            for (let i = 0; i < totalCells; i++) {
+                const dayNumber = i - firstDayIndex + 1;
+                const cell = document.createElement('div');
+
+                if (dayNumber < 1 || dayNumber > daysInMonth) {
+                    cell.className = 'calendar-cell opacity-50';
+                    grid.appendChild(cell);
+                    continue;
+                }
+
+                const key = getRecordKey(appState.activeTask, year, month, dayNumber);
+                const rawRecord = appState.records[key] || { status: null, note: '' };
+                const status = normalizeStatus(rawRecord.status);
+                const isSelectedDay = (dayNumber === appState.selectedDay);
+
+                let cellStatusClass = '';
+                let circleClass = 'date-circle-unmarked';
+                let badgeIconHtml = '';
+
+                if (status === 'completed') {
+                    cellStatusClass = 'status-completed';
+                    circleClass = 'date-circle-completed';
+                    badgeIconHtml = `<span class="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-950 border border-emerald-300 text-emerald-300 flex items-center justify-center text-[9px] shadow"><i class="fa-solid fa-check"></i></span>`;
+                } else if (status === 'not_completed') {
+                    cellStatusClass = 'status-not_completed';
+                    circleClass = 'date-circle-not_completed';
+                    badgeIconHtml = `<span class="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-rose-950 border border-rose-300 text-rose-300 flex items-center justify-center text-[9px] shadow"><i class="fa-solid fa-xmark"></i></span>`;
+                } else if (status === 'skipped') {
+                    cellStatusClass = 'status-skipped';
+                    circleClass = 'date-circle-skipped';
+                    badgeIconHtml = `<span class="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-amber-950 border border-amber-300 text-amber-300 flex items-center justify-center text-[9px] shadow"><i class="fa-solid fa-minus"></i></span>`;
+                }
+
+                cell.className = `calendar-cell active-day p-2 flex flex-col items-center justify-between cursor-pointer group ${cellStatusClass} ${isSelectedDay ? 'selected-day' : ''}`;
+                cell.onclick = () => handleDayCellClick(dayNumber);
+
+                // Top Bar inside Cell: Status Label Pill + Note Edit Button
+                const topRow = document.createElement('div');
+                topRow.className = 'w-full flex items-center justify-between min-h-[16px]';
+
+                const statusMiniLabel = document.createElement('span');
+                statusMiniLabel.className = 'text-[9px] font-bold uppercase tracking-wider';
+                if (status === 'completed') {
+                    statusMiniLabel.className += ' text-emerald-400';
+                    statusMiniLabel.textContent = 'Done';
+                } else if (status === 'not_completed') {
+                    statusMiniLabel.className += ' text-rose-400';
+                    statusMiniLabel.textContent = 'Missed';
+                } else if (status === 'skipped') {
+                    statusMiniLabel.className += ' text-amber-400';
+                    statusMiniLabel.textContent = 'Skipped';
+                } else {
+                    statusMiniLabel.innerHTML = '&nbsp;';
+                }
+
+                const editNoteBtn = document.createElement('button');
+                editNoteBtn.type = 'button';
+                editNoteBtn.title = 'Set status or add daily details';
+                editNoteBtn.className = `no-print ${rawRecord.note ? 'opacity-100 text-sky-400' : 'opacity-0 group-hover:opacity-100 text-slate-400'} hover:text-sky-300 text-[11px] px-1 transition`;
+                editNoteBtn.innerHTML = '<i class="fa-regular fa-pen-to-square"></i>';
+                editNoteBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    openDayNoteModal(dayNumber);
+                };
+
+                topRow.appendChild(statusMiniLabel);
+                topRow.appendChild(editNoteBtn);
+
+                // Center Circular Date Badge
+                const circleEl = document.createElement('div');
+                circleEl.className = `date-circle ${circleClass} my-auto`;
+                circleEl.innerHTML = `<span>${dayNumber}</span>${badgeIconHtml}`;
+
+                // Bottom Note Preview (if present)
+                const bottomRow = document.createElement('div');
+                bottomRow.className = 'w-full min-h-[16px] flex items-center justify-center';
+                if (rawRecord.note) {
+                    const noteTag = document.createElement('div');
+                    noteTag.className = 'w-full text-[10px] text-center text-sky-200 bg-sky-950/70 border border-sky-500/30 rounded px-1.5 py-0.5 truncate';
+                    noteTag.textContent = rawRecord.note;
+                    bottomRow.appendChild(noteTag);
+                }
+
+                cell.appendChild(topRow);
+                cell.appendChild(circleEl);
+                cell.appendChild(bottomRow);
+                grid.appendChild(cell);
+            }
+        }
+
+        // 5. Calculate & Render Top Stats Bar
+        function renderStats() {
+            const { completed, notCompleted, skipped, rate } = getTaskMonthStats(appState.activeTask, appState.currentYear, appState.currentMonth);
+            document.getElementById('statCompleted').textContent = completed;
+            document.getElementById('statNotCompleted').textContent = notCompleted;
+            document.getElementById('statSkipped').textContent = skipped;
+            document.getElementById('statSuccessRate').textContent = `${rate}%`;
+
+            // Update Total Completed count in Sidebar
+            let totalCompletedAllTime = 0;
+            Object.values(appState.records).forEach(r => {
+                if (r && normalizeStatus(r.status) === 'completed') totalCompletedAllTime++;
+            });
+            document.getElementById('profileStreakCount').textContent = `${totalCompletedAllTime} ${totalCompletedAllTime === 1 ? 'Day' : 'Days'}`;
+        }
+
+        // 6. Render Sidebar All-Tasks Overview
+        function renderSidebarOverview() {
+            const container = document.getElementById('subjectMiniBreakdown');
+            container.innerHTML = '';
+
+            let totalCompletedAll = 0;
+            let totalAttemptedAll = 0;
+
+            appState.tasks.forEach(task => {
+                const { completed, notCompleted, skipped, rate } = getTaskMonthStats(task, appState.currentYear, appState.currentMonth);
+                totalCompletedAll += completed;
+                totalAttemptedAll += (completed + notCompleted);
+
+                const row = document.createElement('div');
+                row.className = 'text-xs';
+                row.innerHTML = `
+                    <div class="flex justify-between text-[11px] mb-0.5">
+                        <span class="font-medium ${task === appState.activeTask ? 'text-sky-400 font-bold' : 'text-slate-300'}">${escapeHtml(task)}</span>
+                        <span class="text-slate-400">
+                            <span class="text-emerald-400 font-semibold">${completed}✓</span> · 
+                            <span class="text-rose-400 font-semibold">${notCompleted}✕</span> · 
+                            <span class="text-amber-400 font-semibold">${skipped}−</span> (${rate}%)
+                        </span>
+                    </div>
+                    <div class="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                        <div class="h-full bg-emerald-400 rounded-full transition-all duration-300" style="width: ${rate}%"></div>
+                    </div>
+                `;
+                container.appendChild(row);
+            });
+
+            const overallRate = totalAttemptedAll > 0 ? Math.round((totalCompletedAll / totalAttemptedAll) * 100) : 0;
+            document.getElementById('overallRateBadge').textContent = `${overallRate}%`;
+            document.getElementById('overallProgressBar').style.width = `${overallRate}%`;
+        }
+
+        // Helper: Compute stats for a given task/year/month
+        function getTaskMonthStats(taskName, year, month) {
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+            let completed = 0;
+            let notCompleted = 0;
+            let skipped = 0;
+
+            for (let d = 1; d <= daysInMonth; d++) {
+                const key = getRecordKey(taskName, year, month, d);
+                const status = normalizeStatus(appState.records[key]?.status);
+                if (status === 'completed') completed++;
+                else if (status === 'not_completed') notCompleted++;
+                else if (status === 'skipped') skipped++;
+            }
+
+            // Success rate based on Completed vs (Completed + Not Completed)
+            const totalEvaluated = completed + notCompleted;
+            const rate = totalEvaluated > 0 ? Math.round((completed / totalEvaluated) * 100) : 0;
+            return { completed, notCompleted, skipped, rate, daysInMonth };
+        }
+
+        function getRecordKey(task, year, month, day) {
+            return `${task}__${year}-${month}__${day}`;
+        }
+
+        // Interaction: Click Circular Date to Cycle Status:
+        // Unmarked -> Completed (Green) -> Not Completed (Red) -> Skipped (Yellow) -> Unmarked
+        function handleDayCellClick(dayNumber) {
+            appState.selectedDay = dayNumber;
+            const key = getRecordKey(appState.activeTask, appState.currentYear, appState.currentMonth, dayNumber);
+            const existing = appState.records[key] || { status: null, note: '' };
+            const currentStatus = normalizeStatus(existing.status);
+
+            if (!currentStatus) {
+                existing.status = 'completed';
+            } else if (currentStatus === 'completed') {
+                existing.status = 'not_completed';
+            } else if (currentStatus === 'not_completed') {
+                existing.status = 'skipped';
+            } else {
+                existing.status = null;
+            }
+
+            appState.records[key] = existing;
+            renderAll();
+            persistChanges();
+        }
+
+        // Task Selection, Addition & Deletion
+        function selectTask(taskName) {
+            appState.activeTask = taskName;
+            renderAll();
+            persistChanges();
+        }
+
+        function openAddTaskModal() {
+            document.getElementById('newTaskNameInput').value = '';
+            document.getElementById('addTaskModal').classList.remove('hidden');
+            setTimeout(() => document.getElementById('newTaskNameInput').focus(), 50);
+        }
+
+        function closeAddTaskModal() {
+            document.getElementById('addTaskModal').classList.add('hidden');
+        }
+
+        function handleAddTaskSubmit(e) {
+            e.preventDefault();
+            const val = document.getElementById('newTaskNameInput').value.trim();
+            if (!val) return;
+            if (!appState.tasks.includes(val)) {
+                appState.tasks.push(val);
+            }
+            appState.activeTask = val;
+            closeAddTaskModal();
+            renderAll();
+            persistChanges();
+            showToast(`Task "${val}" created & saved!`);
+        }
+
+        function deleteTask(taskName) {
+            if (appState.tasks.length <= 1) return;
+            appState.tasks = appState.tasks.filter(t => t !== taskName);
+            if (appState.activeTask === taskName) {
+                appState.activeTask = appState.tasks[0];
+            }
+            renderAll();
+            persistChanges();
+            showToast(`Task "${taskName}" removed.`);
+        }
+
+        // Month & Year Navigation
+        function changeMonth(delta) {
+            let newMonth = appState.currentMonth + delta;
+            let newYear = appState.currentYear;
+            if (newMonth < 0) {
+                newMonth = 11;
+                newYear--;
+            } else if (newMonth > 11) {
+                newMonth = 0;
+                newYear++;
+            }
+            appState.currentMonth = newMonth;
+            appState.currentYear = newYear;
+            const maxDays = new Date(newYear, newMonth + 1, 0).getDate();
+            if (appState.selectedDay > maxDays) appState.selectedDay = maxDays;
+            renderAll();
+            persistChanges();
+        }
+
+        function toggleMonthPicker() {
+            const pop = document.getElementById('monthPickerPopover');
+            pop.classList.toggle('hidden');
+            if (!pop.classList.contains('hidden')) {
+                renderMonthPickerGrid();
+            }
+        }
+
+        function changeYear(delta) {
+            appState.currentYear += delta;
+            renderMonthPickerGrid();
+            renderAll();
+            persistChanges();
+        }
+
+        function renderMonthPickerGrid() {
+            document.getElementById('pickerYearLabel').textContent = appState.currentYear;
+            const grid = document.getElementById('pickerMonthsGrid');
+            grid.innerHTML = '';
+            SHORT_MONTHS.forEach((mName, idx) => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                const isCurr = idx === appState.currentMonth;
+                btn.className = `py-2 rounded-lg font-semibold transition ${
+                    isCurr ? 'bg-sky-500 text-slate-950 font-bold' : 'bg-slate-800/80 hover:bg-slate-700 text-slate-300'
+                }`;
+                btn.textContent = mName;
+                btn.onclick = () => {
+                    appState.currentMonth = idx;
+                    toggleMonthPicker();
+                    renderAll();
+                    persistChanges();
+                };
+                grid.appendChild(btn);
+            });
+        }
+
+        function jumpToOct2026() {
+            appState.currentYear = 2026;
+            appState.currentMonth = 9;
+            appState.selectedDay = 25;
+            toggleMonthPicker();
+            renderAll();
+            persistChanges();
+        }
+
+        // Authentication Modal Functions (Sign In / Sign Up)
+        function openAuthModal() {
+            document.getElementById('authErrorBox').classList.add('hidden');
+            document.getElementById('authModal').classList.remove('hidden');
+        }
+
+        function closeAuthModal() {
+            document.getElementById('authModal').classList.add('hidden');
+        }
+
+        function switchAuthTab(mode) {
+            authModalMode = mode;
+            const signInBtn = document.getElementById('tabSignInBtn');
+            const signUpBtn = document.getElementById('tabSignUpBtn');
+            const extraFields = document.getElementById('signUpExtraFields');
+            const submitBtn = document.getElementById('authSubmitBtn');
+            const desc = document.getElementById('authModeDescription');
+            document.getElementById('authErrorBox').classList.add('hidden');
+
+            if (mode === 'signup') {
+                signUpBtn.className = 'py-2 rounded-lg text-xs font-bold uppercase tracking-wider bg-sky-500 text-slate-950 transition';
+                signInBtn.className = 'py-2 rounded-lg text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white transition';
+                extraFields.classList.remove('hidden');
+                submitBtn.textContent = 'Create Personal Account';
+                desc.textContent = 'Create your personal account with email and password. Your tasks and progress are saved securely in the cloud.';
+            } else {
+                signInBtn.className = 'py-2 rounded-lg text-xs font-bold uppercase tracking-wider bg-sky-500 text-slate-950 transition';
+                signUpBtn.className = 'py-2 rounded-lg text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white transition';
+                extraFields.classList.add('hidden');
+                submitBtn.textContent = 'Sign In to Dashboard';
+                desc.textContent = 'Sign in with your email and password to access your saved dashboard from any device.';
+            }
+        }
+
+        async function handleAuthSubmit(e) {
+            e.preventDefault();
+            const email = document.getElementById('authEmailInput').value.trim();
+            const password = document.getElementById('authPasswordInput').value;
+            const mainName = document.getElementById('authMainName').value.trim() || 'XXX';
+            const surname = document.getElementById('authSurname').value.trim() || 'YYY';
+            const errorBox = document.getElementById('authErrorBox');
+            const submitBtn = document.getElementById('authSubmitBtn');
+
+            errorBox.classList.add('hidden');
+            const originalText = submitBtn.textContent;
+            submitBtn.textContent = 'Please wait...';
+            submitBtn.disabled = true;
+
+            try {
+                const res = await window.performEmailPasswordAuth(authModalMode, email, password, mainName, surname);
+                closeAuthModal();
+                showToast(res.isNew ? `Welcome! Account created for ${res.email}` : `Signed in as ${res.email}`);
+            } catch (err) {
+                errorBox.textContent = err.message || 'Authentication failed. Please try again.';
+                errorBox.classList.remove('hidden');
+            } finally {
+                submitBtn.textContent = originalText;
+                submitBtn.disabled = false;
+            }
+        }
+
+        async function handleLogoutAccount() {
+            await window.performAccountSignOut();
+            closeAuthModal();
+            showToast("Signed out of personal account.");
+        }
+
+        // Profile Sidebar Toggle & Modal Functions
+        function toggleSidebar() {
+            const sb = document.getElementById('profileSidebar');
+            sb.classList.toggle('hidden');
+        }
+
+        function openProfileModal() {
+            const p = appState.profile;
+            document.getElementById('inputProfileMainName').value = p.mainName || 'XXX';
+            document.getElementById('inputProfileSurname').value = p.surname || 'YYY';
+            document.getElementById('inputProfileEmail').value = p.email;
+            document.getElementById('inputProfilePhone').value = p.phone;
+            document.getElementById('inputProfilePhotoUrl').value = p.photo.startsWith('data:') ? '' : p.photo;
+            document.getElementById('modalPhotoPreview').src = p.photo;
+            document.getElementById('previewHeaderName').textContent = `${p.mainName || 'XXX'} ${p.surname || 'YYY'}`.trim();
+            document.getElementById('profileModal').classList.remove('hidden');
+        }
+
+        function closeProfileModal() {
+            document.getElementById('profileModal').classList.add('hidden');
+        }
+
+        function selectPresetAvatar(url) {
+            appState.profile.photo = url;
+            document.getElementById('modalPhotoPreview').src = url;
+            document.getElementById('inputProfilePhotoUrl').value = url;
+            renderProfileUI();
+            persistChanges();
+        }
+
+        function handlePhotoFileSelect(event) {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const resultUrl = e.target.result;
+                appState.profile.photo = resultUrl;
+                const modalPrev = document.getElementById('modalPhotoPreview');
+                if (modalPrev) modalPrev.src = resultUrl;
+                renderProfileUI();
+                persistChanges();
+                showToast("Profile photo updated & saved!");
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function saveProfileChanges(e) {
+            e.preventDefault();
+            const mainName = document.getElementById('inputProfileMainName').value.trim() || "XXX";
+            const surname = document.getElementById('inputProfileSurname').value.trim() || "YYY";
+            const email = document.getElementById('inputProfileEmail').value.trim() || "xxx.yyy@example.com";
+            const phone = document.getElementById('inputProfilePhone').value.trim() || "+91 98765 43210";
+            const customUrl = document.getElementById('inputProfilePhotoUrl').value.trim();
+
+            appState.profile.mainName = mainName;
+            appState.profile.surname = surname;
+            appState.profile.email = email;
+            appState.profile.phone = phone;
+            if (customUrl) {
+                appState.profile.photo = customUrl;
+            }
+
+            closeProfileModal();
+            renderAll();
+            persistChanges();
+            showToast("Profile saved to cloud!");
+        }
+
+        function copyProfileField(type) {
+            const text = type === 'email' ? appState.profile.email : appState.profile.phone;
+            const tempInput = document.createElement('textarea');
+            tempInput.value = text;
+            document.body.appendChild(tempInput);
+            tempInput.select();
+            document.execCommand('copy');
+            document.body.removeChild(tempInput);
+            showToast(`Copied ${type === 'email' ? 'Email ID' : 'Phone Number'}!`);
+        }
+
+        // Daily Note & Status Modal
+        function openDayNoteModal(dayNumber) {
+            editingDayNumber = dayNumber;
+            appState.selectedDay = dayNumber;
+            const key = getRecordKey(appState.activeTask, appState.currentYear, appState.currentMonth, dayNumber);
+            const rec = appState.records[key] || { status: null, note: '' };
+
+            document.getElementById('dayNoteModalTitle').textContent = `${MONTH_NAMES[appState.currentMonth]} ${dayNumber}, ${appState.currentYear} • ${appState.activeTask}`;
+            document.getElementById('dayNoteInput').value = rec.note || '';
+            document.getElementById('dayNoteModal').classList.remove('hidden');
+            renderCalendarGrid();
+        }
+
+        function closeDayNoteModal() {
+            document.getElementById('dayNoteModal').classList.add('hidden');
+            editingDayNumber = null;
+        }
+
+        function setModalDayStatus(status) {
+            if (!editingDayNumber) return;
+            const key = getRecordKey(appState.activeTask, appState.currentYear, appState.currentMonth, editingDayNumber);
+            const rec = appState.records[key] || { status: null, note: '' };
+            rec.status = status;
+            rec.note = document.getElementById('dayNoteInput').value.trim();
+            appState.records[key] = rec;
+            renderAll();
+            persistChanges();
+        }
+
+        function saveDayNote() {
+            if (!editingDayNumber) return;
+            const key = getRecordKey(appState.activeTask, appState.currentYear, appState.currentMonth, editingDayNumber);
+            const rec = appState.records[key] || { status: null, note: '' };
+            rec.note = document.getElementById('dayNoteInput').value.trim();
+            appState.records[key] = rec;
+            closeDayNoteModal();
+            renderAll();
+            persistChanges();
+            showToast("Daily details saved!");
+        }
+
+        // ==========================================
+        // INTERACTIVE MONTHLY GRAPH MODAL & CLICKABLE DRILL-DOWN
+        // ==========================================
+        function openGraphModal(initialFilter = 'all') {
+            currentGraphFilter = initialFilter;
+            const monthName = MONTH_NAMES[appState.currentMonth];
+            const year = appState.currentYear;
+            const task = appState.activeTask;
+
+            document.getElementById('graphActiveTaskTitle').textContent = `${task} — ${monthName} ${year} Breakdown`;
+            document.getElementById('graphComparisonMonth').textContent = `${monthName} ${year}`;
+
+            const { completed, notCompleted, skipped, daysInMonth } = getTaskMonthStats(task, year, appState.currentMonth);
+            const pctCompleted = Math.round((completed / daysInMonth) * 100);
+            const pctNotCompleted = Math.round((notCompleted / daysInMonth) * 100);
+            const pctSkipped = Math.round((skipped / daysInMonth) * 100);
+
+            document.getElementById('graphCountCompleted').textContent = `${completed} ${completed === 1 ? 'Day' : 'Days'}`;
+            document.getElementById('graphCountNotCompleted').textContent = `${notCompleted} ${notCompleted === 1 ? 'Day' : 'Days'}`;
+            document.getElementById('graphCountSkipped').textContent = `${skipped} ${skipped === 1 ? 'Day' : 'Days'}`;
+
+            document.getElementById('graphPctCompleted').textContent = `${pctCompleted}% of month`;
+            document.getElementById('graphPctNotCompleted').textContent = `${pctNotCompleted}% of month`;
+            document.getElementById('graphPctSkipped').textContent = `${pctSkipped}% of month`;
+
+            document.getElementById('graphBarCompleted').style.width = `${pctCompleted}%`;
+            document.getElementById('graphBarNotCompleted').style.width = `${pctNotCompleted}%`;
+            document.getElementById('graphBarSkipped').style.width = `${pctSkipped}%`;
+
+            // Proportional segments
+            document.getElementById('multiSegmentCompleted').style.width = `${pctCompleted}%`;
+            document.getElementById('multiSegmentNotCompleted').style.width = `${pctNotCompleted}%`;
+            document.getElementById('multiSegmentSkipped').style.width = `${pctSkipped}%`;
+
+            // Render All Tasks Comparison
+            const compContainer = document.getElementById('graphAllTasksComparison');
+            compContainer.innerHTML = '';
+            appState.tasks.forEach(tName => {
+                const st = getTaskMonthStats(tName, year, appState.currentMonth);
+                const cW = Math.round((st.completed / st.daysInMonth) * 100);
+                const ncW = Math.round((st.notCompleted / st.daysInMonth) * 100);
+                const sW = Math.round((st.skipped / st.daysInMonth) * 100);
+
+                const row = document.createElement('div');
+                row.className = 'bg-[#0c1324] border border-slate-800/90 rounded-lg p-3 space-y-1.5';
+                row.innerHTML = `
+                    <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <span class="font-bold text-white">${escapeHtml(tName)}</span>
+                        <div class="flex items-center gap-3 text-[11px]">
+                            <span class="text-emerald-400 font-semibold">${st.completed} Completed</span>
+                            <span class="text-rose-400 font-semibold">${st.notCompleted} Not Completed</span>
+                            <span class="text-amber-400 font-semibold">${st.skipped} Skipped</span>
+                            <span class="px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 font-bold">${st.rate}%</span>
+                        </div>
+                    </div>
+                    <div class="w-full h-2.5 rounded-full bg-slate-900 overflow-hidden flex">
+                        <div class="h-full bg-emerald-500" style="width: ${cW}%"></div>
+                        <div class="h-full bg-rose-500" style="width: ${ncW}%"></div>
+                        <div class="h-full bg-amber-400" style="width: ${sW}%"></div>
+                    </div>
+                `;
+                compContainer.appendChild(row);
+            });
+
+            filterGraphDates(initialFilter);
+            document.getElementById('graphModal').classList.remove('hidden');
+        }
+
+        // Clicking a Graph Bar/Card filters and displays the exact relevant dates and details
+        function filterGraphDates(filterType) {
+            currentGraphFilter = filterType;
+            const year = appState.currentYear;
+            const month = appState.currentMonth;
+            const monthName = MONTH_NAMES[month];
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+            // Highlight active filter pill
+            ['all', 'completed', 'not_completed', 'skipped'].forEach(type => {
+                const pill = document.getElementById(`pillFilter_${type}`);
+                if (pill) {
+                    if (type === filterType) {
+                        pill.className = 'px-2.5 py-1 rounded-md bg-sky-500 text-slate-950 font-bold';
+                    } else {
+                        pill.className = 'px-2.5 py-1 rounded-md bg-slate-800 text-slate-300 hover:bg-slate-700 font-semibold';
+                    }
+                }
+            });
+
+            const listContainer = document.getElementById('graphDrilldownList');
+            listContainer.innerHTML = '';
+
+            const matchingDays = [];
+            for (let d = 1; d <= daysInMonth; d++) {
+                const key = getRecordKey(appState.activeTask, year, month, d);
+                const rec = appState.records[key];
+                const status = normalizeStatus(rec?.status);
+                const note = rec?.note || '';
+
+                if (filterType === 'all') {
+                    if (status || note) matchingDays.push({ day: d, status, note });
+                } else if (status === filterType) {
+                    matchingDays.push({ day: d, status, note });
+                }
+            }
+
+            const titleMap = {
+                all: `All Recorded Dates in ${monthName} ${year} (${matchingDays.length})`,
+                completed: `Completed (Green) Dates in ${monthName} ${year} (${matchingDays.length})`,
+                not_completed: `Not Completed (Red) Dates in ${monthName} ${year} (${matchingDays.length})`,
+                skipped: `Skipped (Yellow) Dates in ${monthName} ${year} (${matchingDays.length})`
+            };
+            document.getElementById('drilldownHeaderTitle').innerHTML = `<i class="fa-solid fa-list-check text-sky-400"></i><span>${titleMap[filterType]}</span>`;
+
+            if (matchingDays.length === 0) {
+                listContainer.innerHTML = `
+                    <div class="text-center py-6 text-xs text-slate-400 bg-[#0b1120] rounded-xl border border-slate-800/70">
+                        No dates match this status yet in ${monthName} ${year}. Click any circular date on the calendar to mark it!
+                    </div>
+                `;
+                return;
+            }
+
+            matchingDays.forEach(item => {
+                const dateObj = new Date(year, month, item.day);
+                const dayOfWeekName = DAY_NAMES[dateObj.getDay()];
+
+                let badgeClass = 'bg-slate-800 text-slate-300 border-slate-600';
+                let statusText = 'Note Only';
+                let circleColor = 'bg-slate-700 text-white';
+
+                if (item.status === 'completed') {
+                    badgeClass = 'bg-emerald-950/80 text-emerald-300 border-emerald-500/40';
+                    statusText = 'Completed ✓';
+                    circleColor = 'bg-emerald-500 text-white';
+                } else if (item.status === 'not_completed') {
+                    badgeClass = 'bg-rose-950/80 text-rose-300 border-rose-500/40';
+                    statusText = 'Not Completed ✕';
+                    circleColor = 'bg-rose-500 text-white';
+                } else if (item.status === 'skipped') {
+                    badgeClass = 'bg-amber-950/80 text-amber-300 border-amber-500/40';
+                    statusText = 'Skipped −';
+                    circleColor = 'bg-amber-400 text-slate-950';
+                }
+
+                const row = document.createElement('div');
+                row.className = 'flex items-center justify-between gap-3 p-2.5 rounded-xl bg-[#0c1324] border border-slate-800 hover:border-sky-500/40 transition';
+                row.innerHTML = `
+                    <div class="flex items-center gap-3 min-w-0">
+                        <div class="w-9 h-9 rounded-full ${circleColor} font-black text-xs flex items-center justify-center shrink-0 shadow">
+                            ${item.day}
+                        </div>
+                        <div class="min-w-0">
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs font-bold text-white">${monthName} ${item.day}, ${year} (${dayOfWeekName})</span>
+                                <span class="text-[10px] font-bold px-2 py-0.5 rounded-full border ${badgeClass}">${statusText}</span>
+                            </div>
+                            <p class="text-[11px] text-slate-400 truncate mt-0.5">
+                                ${item.note ? `<i class="fa-regular fa-comment-dots text-sky-400 mr-1"></i>${escapeHtml(item.note)}` : 'No additional note added for this date.'}
+                            </p>
+                        </div>
+                    </div>
+                    <button type="button" onclick="closeGraphModal(); openDayNoteModal(${item.day});" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-sky-500 hover:text-slate-950 text-slate-300 text-[11px] font-semibold shrink-0 transition">
+                        Edit Details
+                    </button>
+                `;
+                listContainer.appendChild(row);
+            });
+        }
+
+        function closeGraphModal() {
+            document.getElementById('graphModal').classList.add('hidden');
+        }
+
+        // Bulk Actions & Reset
+        function markAllMonth(status) {
+            const daysInMonth = new Date(appState.currentYear, appState.currentMonth + 1, 0).getDate();
+            for (let d = 1; d <= daysInMonth; d++) {
+                const key = getRecordKey(appState.activeTask, appState.currentYear, appState.currentMonth, d);
+                const existing = appState.records[key] || { status: null, note: '' };
+                existing.status = status;
+                appState.records[key] = existing;
+            }
+            renderAll();
+            persistChanges();
+            showToast(`Marked all days in ${MONTH_NAMES[appState.currentMonth]} as Completed!`);
+        }
+
+        function clearCurrentTaskMonth() {
+            const daysInMonth = new Date(appState.currentYear, appState.currentMonth + 1, 0).getDate();
+            for (let d = 1; d <= daysInMonth; d++) {
+                const key = getRecordKey(appState.activeTask, appState.currentYear, appState.currentMonth, d);
+                delete appState.records[key];
+            }
+            renderAll();
+            persistChanges();
+            showToast(`Cleared ${appState.activeTask} entries for ${MONTH_NAMES[appState.currentMonth]}.`);
+        }
+
+        function openResetModal() {
+            document.getElementById('resetTaskLabel').textContent = appState.activeTask;
+            document.getElementById('resetModal').classList.remove('hidden');
+        }
+
+        function closeResetModal() {
+            document.getElementById('resetModal').classList.add('hidden');
+        }
+
+        function resetEntireApp() {
+            appState = JSON.parse(JSON.stringify(DEFAULT_STATE));
+            closeResetModal();
+            renderAll();
+            persistChanges();
+            showToast("Dashboard reset to default state.");
+        }
+
+        // Toast Helper
+        let toastTimeout;
+        function showToast(msg) {
+            const toast = document.getElementById('toastNotification');
+            document.getElementById('toastMessage').textContent = msg;
+            toast.classList.remove('hidden');
+            clearTimeout(toastTimeout);
+            toastTimeout = setTimeout(() => {
+                toast.classList.add('hidden');
+            }, 2600);
+        }
+
+        function escapeHtml(str) {
+            return String(str).replace(/[&<>"']/g, function(m) {
+                return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[m];
+            });
+        }
+    </script>
+</body>
+</html>

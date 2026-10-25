@@ -1,0 +1,166 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    background-color: #0b0f19;
+    color: #f1f5f9;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Modern Subtle Header Banner */
+.tracker-header-banner {
+  background: linear-gradient(180deg, #131c31 0%, #0f172a 100%);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+/* Clean Sidebar Cover Accent */
+.sidebar-cover {
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+/* Modern Day-of-Week Header */
+.day-of-week-header {
+  background-color: #111827;
+  color: #94a3b8;
+  font-family: var(--font-sans);
+  letter-spacing: 0.08em;
+}
+
+/* Calendar Grid Cell — fits 6 rows cleanly on 100vh desktop screen */
+.calendar-cell {
+  min-height: 54px;
+  background-color: #0f172a;
+  border: 1px solid rgba(148, 163, 184, 0.08);
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+  position: relative;
+  user-select: none;
+}
+
+.calendar-cell.active-day:hover {
+  background-color: #162036;
+  border-color: rgba(148, 163, 184, 0.2);
+}
+
+/* Selected / Current Day Cell Highlight */
+.calendar-cell.selected-day {
+  background-color: rgba(56, 189, 248, 0.06);
+  border-color: rgba(56, 189, 248, 0.45) !important;
+  z-index: 10;
+}
+
+/* Subtle Cell Tint for 3 Statuses */
+.calendar-cell.status-completed {
+  background: radial-gradient(circle at center, rgba(16, 185, 129, 0.1) 0%, rgba(15, 23, 42, 0.98) 100%);
+  border-color: rgba(16, 185, 129, 0.22);
+}
+.calendar-cell.status-not_completed {
+  background: radial-gradient(circle at center, rgba(244, 63, 94, 0.1) 0%, rgba(15, 23, 42, 0.98) 100%);
+  border-color: rgba(244, 63, 94, 0.22);
+}
+.calendar-cell.status-skipped {
+  background: radial-gradient(circle at center, rgba(245, 158, 11, 0.1) 0%, rgba(15, 23, 42, 0.98) 100%);
+  border-color: rgba(245, 158, 11, 0.22);
+}
+
+/* Circular Date Button Inside Calendar Cell */
+.date-circle {
+  width: 38px;
+  height: 38px;
+  border-radius: 9999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 0.875rem;
+  transition: transform 0.16s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.16s ease, background-color 0.16s ease, border-color 0.16s ease;
+  position: relative;
+}
+@media (min-width: 640px) {
+  .date-circle {
+    width: 42px;
+    height: 42px;
+    font-size: 0.925rem;
+  }
+}
+@media (min-height: 820px) and (min-width: 1024px) {
+  .date-circle {
+    width: 46px;
+    height: 46px;
+    font-size: 0.975rem;
+  }
+}
+.calendar-cell.active-day:hover .date-circle {
+  transform: scale(1.06);
+}
+
+/* Unmarked Circular Date */
+.date-circle-unmarked {
+  background-color: #162033;
+  border: 1.5px solid rgba(148, 163, 184, 0.22);
+  color: #cbd5e1;
+}
+.calendar-cell.selected-day .date-circle-unmarked {
+  border-color: #38bdf8;
+  color: #f8fafc;
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15);
+}
+
+/* GREEN = Completed Circular Date */
+.date-circle-completed {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  border: 1.5px solid #6ee7b7;
+  color: #ffffff;
+  font-weight: 700;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+}
+
+/* RED = Not Completed Circular Date */
+.date-circle-not_completed {
+  background: linear-gradient(135deg, #f43f5e 0%, #e11d48 100%);
+  border: 1.5px solid #fda4af;
+  color: #ffffff;
+  font-weight: 700;
+  box-shadow: 0 4px 12px rgba(244, 63, 94, 0.3);
+}
+
+/* YELLOW = Skipped Circular Date */
+.date-circle-skipped {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  border: 1.5px solid #fcd34d;
+  color: #0f172a;
+  font-weight: 700;
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.28);
+}
+
+/* Subtle Modern Stat Cards */
+.stat-completed {
+  background-color: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.24);
+}
+.stat-not-completed {
+  background-color: rgba(244, 63, 94, 0.08);
+  border: 1px solid rgba(244, 63, 94, 0.24);
+}
+.stat-skipped {
+  background-color: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.24);
+}
+.stat-rate {
+  background-color: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.24);
+}
+
