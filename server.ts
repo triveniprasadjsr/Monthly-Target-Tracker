@@ -73,6 +73,12 @@ async function startServer() {
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
     next();
   });
+  app.get('/google6058ee555355a0f6.html', (_req, res) => {
+    res
+      .status(200)
+      .type('text/html')
+      .send('google-site-verification: google6058ee555355a0f6.html');
+  });
   app.use(express.json({ limit: '5mb' }));
 
   // POST /api/auth/signup - Email & Password registration with separate dashboard storage
