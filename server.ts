@@ -22,6 +22,8 @@ interface StoredDashboard {
   currentMonth: number;
   selectedDay: number;
   records: Record<string, { status: string | null; note: string }>;
+  calendarNotes?: unknown[];
+  calendarExpenditures?: unknown[];
   updatedAt: number;
 }
 
@@ -111,6 +113,8 @@ async function startServer() {
       currentMonth: 9,
       selectedDay: 25,
       records: {},
+      calendarNotes: [],
+      calendarExpenditures: [],
       updatedAt: Date.now(),
     };
 
@@ -242,6 +246,12 @@ async function startServer() {
         incoming.records && typeof incoming.records === 'object'
           ? incoming.records
           : {},
+      calendarNotes: Array.isArray(incoming.calendarNotes)
+        ? incoming.calendarNotes.slice(0, 2000)
+        : account.dashboard.calendarNotes || [],
+      calendarExpenditures: Array.isArray(incoming.calendarExpenditures)
+        ? incoming.calendarExpenditures.slice(0, 2000)
+        : account.dashboard.calendarExpenditures || [],
       updatedAt: Date.now(),
     };
 

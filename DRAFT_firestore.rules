@@ -73,6 +73,32 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidCalendarNote(data, uid, noteId) {
+      return data.keys().hasAll(['noteId', 'uid', 'date', 'title', 'description', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['noteId', 'uid', 'date', 'title', 'description', 'createdAt', 'updatedAt'])
+        && data.noteId is string && data.noteId.size() >= 1 && data.noteId.size() <= 128 && data.noteId == noteId
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == uid && data.uid == request.auth.uid
+        && data.date is string && data.date.size() == 10 && data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 150
+        && data.description is string && data.description.size() <= 2000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCalendarExpenditure(data, uid, expenditureId) {
+      return data.keys().hasAll(['expenditureId', 'uid', 'date', 'monthKey', 'title', 'amount', 'category', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['expenditureId', 'uid', 'date', 'monthKey', 'title', 'amount', 'category', 'createdAt', 'updatedAt'])
+        && data.expenditureId is string && data.expenditureId.size() >= 1 && data.expenditureId.size() <= 128 && data.expenditureId == expenditureId
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == uid && data.uid == request.auth.uid
+        && data.date is string && data.date.size() == 10 && data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.monthKey is string && data.monthKey.size() == 7 && data.monthKey.matches('^[0-9]{4}-[0-9]{2}$')
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 150
+        && data.amount is number && data.amount >= 0 && data.amount <= 100000000
+        && data.category is string && data.category.size() <= 60
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     function isValidTracker(data, uid, trackerId) {
       return data.keys().hasAll([
           'trackerId', 'uid', 'name', 'type', 'description', 'trackingMethod',
@@ -220,6 +246,75 @@ service cloud.firestore {
         allow delete: if isOwner(uid)
           && isValidId(uid)
           && isValidId(docId)
+          && get(/databases/$(database)/documents/users/$(uid)).data.uid == request.auth.uid;
+      }
+
+      // 1C. Calendar Notes Subcollection
+      match /notes/{noteId} {
+        allow get: if isOwner(uid)
+          && isValidId(uid)
+          && isValidId(noteId)
+          && get(/databases/$(database)/documents/users/$(uid)).data.uid == request.auth.uid;
+        allow list: if isOwner(uid) && existing().uid == request.auth.uid;
+        allow create: if isOwner(uid)
+          && isValidId(uid)
+          && isValidId(noteId)
+          && isValidCalendarNote(incoming(), uid, noteId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && get(/databases/$(database)/documents/users/$(uid)).data.uid == request.auth.uid;
+        allow update: if isOwner(uid)
+          && isValidId(uid)
+          && isValidId(noteId)
+          && isValidCalendarNote(incoming(), uid, noteId)
+          && incoming().noteId == existing().noteId
+          && incoming().uid == existing().uid
+          && incoming().date == existing().date
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            // Action: Edit Note Title or Description
+            incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'updatedAt'])
+          )
+          && get(/databases/$(database)/documents/users/$(uid)).data.uid == request.auth.uid;
+        allow delete: if isOwner(uid)
+          && isValidId(uid)
+          && isValidId(noteId)
+          && get(/databases/$(database)/documents/users/$(uid)).data.uid == request.auth.uid;
+      }
+
+      // 1D. Calendar Expenditures Subcollection
+      match /expenditures/{expenditureId} {
+        allow get: if isOwner(uid)
+          && isValidId(uid)
+          && isValidId(expenditureId)
+          && get(/databases/$(database)/documents/users/$(uid)).data.uid == request.auth.uid;
+        allow list: if isOwner(uid) && existing().uid == request.auth.uid;
+        allow create: if isOwner(uid)
+          && isValidId(uid)
+          && isValidId(expenditureId)
+          && isValidCalendarExpenditure(incoming(), uid, expenditureId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && get(/databases/$(database)/documents/users/$(uid)).data.uid == request.auth.uid;
+        allow update: if isOwner(uid)
+          && isValidId(uid)
+          && isValidId(expenditureId)
+          && isValidCalendarExpenditure(incoming(), uid, expenditureId)
+          && incoming().expenditureId == existing().expenditureId
+          && incoming().uid == existing().uid
+          && incoming().date == existing().date
+          && incoming().monthKey == existing().monthKey
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            // Action: Edit Expenditure Title, Amount, or Category
+            incoming().diff(existing()).affectedKeys().hasOnly(['title', 'amount', 'category', 'updatedAt'])
+          )
+          && get(/databases/$(database)/documents/users/$(uid)).data.uid == request.auth.uid;
+        allow delete: if isOwner(uid)
+          && isValidId(uid)
+          && isValidId(expenditureId)
           && get(/databases/$(database)/documents/users/$(uid)).data.uid == request.auth.uid;
       }
 

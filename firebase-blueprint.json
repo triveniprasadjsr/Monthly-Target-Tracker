@@ -406,6 +406,112 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "CalendarNote": {
+      "title": "CalendarNote",
+      "description": "Important user note attached to a specific YYYY-MM-DD calendar date stored in users/{uid}/notes/{noteId}",
+      "type": "object",
+      "properties": {
+        "noteId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "date": {
+          "type": "string",
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "noteId",
+        "uid",
+        "date",
+        "title",
+        "description",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CalendarExpenditure": {
+      "title": "CalendarExpenditure",
+      "description": "Daily expenditure entry in Indian Rupees (INR) attached to a specific YYYY-MM-DD calendar date stored in users/{uid}/expenditures/{expenditureId}",
+      "type": "object",
+      "properties": {
+        "expenditureId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "date": {
+          "type": "string",
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "monthKey": {
+          "type": "string",
+          "maxLength": 7,
+          "pattern": "^[0-9]{4}-[0-9]{2}$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "amount": {
+          "type": "number"
+        },
+        "category": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "expenditureId",
+        "uid",
+        "date",
+        "monthKey",
+        "title",
+        "amount",
+        "category",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -416,6 +522,14 @@
     "/users/{uid}/dashboard/{docId}": {
       "schema": { "$ref": "#/entities/DashboardState" },
       "description": "User's Monthly Target & Task Tracker dashboard state"
+    },
+    "/users/{uid}/notes/{noteId}": {
+      "schema": { "$ref": "#/entities/CalendarNote" },
+      "description": "User's calendar notes for specific YYYY-MM-DD dates"
+    },
+    "/users/{uid}/expenditures/{expenditureId}": {
+      "schema": { "$ref": "#/entities/CalendarExpenditure" },
+      "description": "User's daily expenditure entries in INR for specific YYYY-MM-DD dates"
     },
     "/users/{uid}/trackers/{trackerId}": {
       "schema": { "$ref": "#/entities/Tracker" },

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createUserWithEmailAndPassword,
   onAuthStateChanged,
@@ -24,6 +24,7 @@ import {
 import {
   auth,
   db,
+  generateSafeId,
   googleProvider,
   handleFirestoreError,
   OperationType,
@@ -31,6 +32,28 @@ import {
   testFirestoreConnection,
 } from './lib/firebase';
 import { ensureUserProfileDoc } from './services/firestoreService';
+import {
+  type CalendarExpenditureItem,
+  type CalendarNoteItem,
+  computeMonthCompletionPercentage,
+  computeMonthlyExpenditureSummary,
+  createCalendarExpenditureInFirestore,
+  createCalendarNoteInFirestore,
+  deleteCalendarExpenditureFromFirestore,
+  deleteCalendarNoteFromFirestore,
+  EXPENSE_CATEGORIES,
+  formatFullDateDisplay,
+  formatINR,
+  getDailyExpenditureInfo,
+  getExpendituresForDate,
+  getNotesForDate,
+  subscribeToUserExpenditures,
+  subscribeToUserNotes,
+  toDateKey,
+  toMonthKey,
+  updateCalendarExpenditureInFirestore,
+  updateCalendarNoteInFirestore,
+} from './services/calendarNotesExpenseService';
 import { compressAvatarImageFile } from './utils/dateUtils';
 
 const MONTH_NAMES = [
@@ -121,6 +144,8 @@ const DEFAULT_STATE: TrackerAppState = {
 };
 
 const SESSION_TOKEN_KEY = 'monthly_tracker_session_token';
+const LOCAL_NOTES_KEY = 'monthly_tracker_notes_v1';
+const LOCAL_EXPENDITURES_KEY = 'monthly_tracker_expenditures_v1';
 
 function normalizeStatus(status: unknown): DayStatus {
   if (status === 'met' || status === 'completed') return 'completed';
@@ -138,6 +163,89 @@ function getRecordKey(
   return `${task}__${year}-${month}__${day}`;
 }
 
+function loadLocalNotes(): CalendarNoteItem[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_NOTES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalNotes(notes: CalendarNoteItem[]): void {
+  try {
+    localStorage.setItem(LOCAL_NOTES_KEY, JSON.stringify(notes));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function loadLocalExpenditures(): CalendarExpenditureItem[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_EXPENDITURES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalExpenditures(expenditures: CalendarExpenditureItem[]): void {
+  try {
+    localStorage.setItem(LOCAL_EXPENDITURES_KEY, JSON.stringify(expenditures));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function formatFirebaseAuthError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  if (raw.includes('auth/email-already-in-use')) {
+    return 'An account with this email already exists. Please switch to Sign In.';
+  }
+  if (
+    raw.includes('auth/invalid-credential') ||
+    raw.includes('auth/wrong-password') ||
+    raw.includes('auth/user-not-found')
+  ) {
+    return 'Invalid email or password. Please check your credentials or Sign Up first.';
+  }
+  if (raw.includes('auth/invalid-email')) {
+    return 'Please enter a valid email address.';
+  }
+  if (raw.includes('auth/weak-password')) {
+    return 'Password must be at least 6 characters long.';
+  }
+  if (raw.includes('auth/too-many-requests')) {
+    return 'Too many failed attempts. Please wait a moment and try again.';
+  }
+  if (raw.includes('Unexpected token')) {
+    return 'Unable to reach authentication service. Please try again.';
+  }
+  return raw.replace(/^Firebase:\s*/i, '');
+}
+
+async function safeFetchJson(
+  url: string,
+  options?: RequestInit
+): Promise<{ ok: boolean; status: number; data: Record<string, unknown> | null }> {
+  try {
+    const res = await fetch(url, options);
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      return { ok: false, status: res.status, data: null };
+    }
+    const text = await res.text();
+    const data = JSON.parse(text) as Record<string, unknown>;
+    return { ok: res.ok, status: res.status, data };
+  } catch {
+    return { ok: false, status: 0, data: null };
+  }
+}
+
 export default function App() {
   const [appState, setAppState] = useState<TrackerAppState>(() =>
     JSON.parse(JSON.stringify(DEFAULT_STATE))
@@ -149,15 +257,61 @@ export default function App() {
     token: string;
   } | null>(null);
 
+  // Calendar Notes & Expenditures state
+  const [calendarNotes, setCalendarNotes] = useState<CalendarNoteItem[]>(() =>
+    loadLocalNotes()
+  );
+  const [calendarExpenditures, setCalendarExpenditures] = useState<
+    CalendarExpenditureItem[]
+  >(() => loadLocalExpenditures());
+
   // UI toggles & modal states
   const [sidebarHidden, setSidebarHidden] = useState(false);
   const [monthPickerOpen, setMonthPickerOpen] = useState(false);
+
+  // Context Menu State for Calendar Date Right-Click / Long-Press / Menu Button
+  const [contextMenu, setContextMenu] = useState<{
+    day: number;
+    dateKey: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Modal: Add / Edit Note
+  const [noteModalOpen, setNoteModalOpen] = useState(false);
+  const [noteTargetDay, setNoteTargetDay] = useState<number>(25);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [noteTitleInput, setNoteTitleInput] = useState('');
+  const [noteDescInput, setNoteDescInput] = useState('');
+  const [noteError, setNoteError] = useState<string | null>(null);
+  const [noteSubmitting, setNoteSubmitting] = useState(false);
+
+  // Modal: Add / Edit Expenditure
+  const [expModalOpen, setExpModalOpen] = useState(false);
+  const [expTargetDay, setExpTargetDay] = useState<number>(25);
+  const [editingExpId, setEditingExpId] = useState<string | null>(null);
+  const [expTitleInput, setExpTitleInput] = useState('');
+  const [expAmountInput, setExpAmountInput] = useState('');
+  const [expCategoryInput, setExpCategoryInput] = useState<string>('');
+  const [expError, setExpError] = useState<string | null>(null);
+  const [expSubmitting, setExpSubmitting] = useState(false);
+
+  // Modal: View Date Details (Notes & Expenditures for Selected Date)
+  const [detailsModalOpen, setDetailsModalOpen] = useState(false);
+  const [detailsTargetDay, setDetailsTargetDay] = useState<number>(25);
+  const [confirmDeleteTarget, setConfirmDeleteTarget] = useState<{
+    type: 'note' | 'expenditure';
+    id: string;
+    title: string;
+  } | null>(null);
+  const [deletingItem, setDeletingItem] = useState(false);
 
   // Modal 0: Sign In / Sign Up Modal
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authTab, setAuthTab] = useState<'signin' | 'signup'>('signin');
   const [authMainName, setAuthMainName] = useState('XXX');
-  const [authSurname, setAuthSurname] = useState('YYY');
+  const [authSurname] = useState('YYY');
   const [authPhone, setAuthPhone] = useState('+91 98765 43210');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
@@ -186,8 +340,23 @@ export default function App() {
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
     toastTimeoutRef.current = setTimeout(() => {
       setToastMsg(null);
-    }, 2600);
+    }, 2800);
   }, []);
+
+  // Close context menu on outside click or Escape key
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handleGlobalClick = () => setContextMenu(null);
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setContextMenu(null);
+    };
+    window.addEventListener('click', handleGlobalClick);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('click', handleGlobalClick);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [contextMenu]);
 
   // Save state to Cloud Firestore under users/{uid}/dashboard/main
   const saveDashboardToFirestore = useCallback(
@@ -279,25 +448,32 @@ export default function App() {
     [authUser]
   );
 
-  // Save state to Backend Database (/api/dashboard) when logged in via Email/Password session
+  // Save state to Backend Database (/api/dashboard) when available
   const saveDashboardToBackend = useCallback(
-    async (nextState: TrackerAppState, tokenOverride?: string) => {
+    async (
+      nextState: TrackerAppState,
+      notesOverride?: CalendarNoteItem[],
+      expOverride?: CalendarExpenditureItem[],
+      tokenOverride?: string
+    ) => {
       const token = tokenOverride || backendSession?.token;
       if (!token) return;
-      try {
-        await fetch('/api/dashboard', {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
+      await safeFetchJson('/api/dashboard', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          dashboard: {
+            ...nextState,
+            calendarNotes: notesOverride ?? calendarNotes,
+            calendarExpenditures: expOverride ?? calendarExpenditures,
           },
-          body: JSON.stringify({ dashboard: nextState }),
-        });
-      } catch (err) {
-        console.error('Failed to sync dashboard to server:', err);
-      }
+        }),
+      });
     },
-    [backendSession?.token]
+    [backendSession?.token, calendarExpenditures, calendarNotes]
   );
 
   // Helper to update state and persist to active database(s)
@@ -309,7 +485,7 @@ export default function App() {
           saveDashboardToFirestore(next, authUser);
         }
         if (backendSession?.token) {
-          saveDashboardToBackend(next, backendSession.token);
+          saveDashboardToBackend(next, undefined, undefined, backendSession.token);
         }
         return next;
       });
@@ -317,56 +493,62 @@ export default function App() {
     [authUser, backendSession?.token, saveDashboardToBackend, saveDashboardToFirestore]
   );
 
-  // Restore backend email/password session on boot if present
+  // Restore backend email/password session on boot if present and no Firebase user
   useEffect(() => {
     const savedToken = sessionStorage.getItem(SESSION_TOKEN_KEY);
     if (!savedToken) return;
 
-    fetch('/api/dashboard', {
+    safeFetchJson('/api/dashboard', {
       headers: { Authorization: `Bearer ${savedToken}` },
-    })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data && data.dashboard) {
-          setBackendSession({
-            uid: data.uid,
-            email: data.email,
-            token: savedToken,
-          });
-          const d = data.dashboard;
-          setAppState({
-            profile: {
-              mainName: d.profile?.mainName || 'XXX',
-              surname: d.profile?.surname || 'YYY',
-              email: d.profile?.email || data.email || 'xxx.yyy@example.com',
-              phone: d.profile?.phone || '+91 98765 43210',
-              photo: d.profile?.photo || PRESET_AVATARS[0],
-            },
-            tasks:
-              Array.isArray(d.tasks) && d.tasks.length > 0
-                ? d.tasks
-                : ['General'],
-            activeTask: d.activeTask || 'General',
-            currentYear:
-              typeof d.currentYear === 'number' ? d.currentYear : 2026,
-            currentMonth:
-              typeof d.currentMonth === 'number' ? d.currentMonth : 9,
-            selectedDay:
-              typeof d.selectedDay === 'number' ? d.selectedDay : 25,
-            records: d.records && typeof d.records === 'object' ? d.records : {},
-          });
-        } else {
-          sessionStorage.removeItem(SESSION_TOKEN_KEY);
+    }).then(({ ok, data }) => {
+      if (ok && data && data.dashboard) {
+        const d = data.dashboard as Record<string, any>;
+        setBackendSession({
+          uid: String(data.uid || ''),
+          email: String(data.email || ''),
+          token: savedToken,
+        });
+        setAppState({
+          profile: {
+            mainName: d.profile?.mainName || 'XXX',
+            surname: d.profile?.surname || 'YYY',
+            email:
+              d.profile?.email || String(data.email || 'xxx.yyy@example.com'),
+            phone: d.profile?.phone || '+91 98765 43210',
+            photo: d.profile?.photo || PRESET_AVATARS[0],
+          },
+          tasks:
+            Array.isArray(d.tasks) && d.tasks.length > 0
+              ? d.tasks
+              : ['General'],
+          activeTask: d.activeTask || 'General',
+          currentYear:
+            typeof d.currentYear === 'number' ? d.currentYear : 2026,
+          currentMonth:
+            typeof d.currentMonth === 'number' ? d.currentMonth : 9,
+          selectedDay:
+            typeof d.selectedDay === 'number' ? d.selectedDay : 25,
+          records: d.records && typeof d.records === 'object' ? d.records : {},
+        });
+        if (Array.isArray(d.calendarNotes)) {
+          setCalendarNotes(d.calendarNotes);
         }
-      })
-      .catch(() => {});
+        if (Array.isArray(d.calendarExpenditures)) {
+          setCalendarExpenditures(d.calendarExpenditures);
+        }
+      } else {
+        sessionStorage.removeItem(SESSION_TOKEN_KEY);
+      }
+    });
   }, []);
 
-  // Subscribe to Firebase Auth & Cloud Firestore Dashboard
+  // Subscribe to Firebase Auth & Cloud Firestore Dashboard + Notes + Expenditures
   useEffect(() => {
     testFirestoreConnection();
 
     let unsubDashboard: (() => void) | null = null;
+    let unsubNotes: (() => void) | null = null;
+    let unsubExpenditures: (() => void) | null = null;
 
     const unsubAuth = onAuthStateChanged(auth, async (user) => {
       setAuthUser(user);
@@ -375,6 +557,14 @@ export default function App() {
         unsubDashboard();
         unsubDashboard = null;
       }
+      if (unsubNotes) {
+        unsubNotes();
+        unsubNotes = null;
+      }
+      if (unsubExpenditures) {
+        unsubExpenditures();
+        unsubExpenditures = null;
+      }
 
       if (!user) return;
 
@@ -382,7 +572,7 @@ export default function App() {
         await ensureUserProfileDoc({
           uid: user.uid,
           displayName:
-            user.displayName || user.email?.split('@')[0] || 'XXX YYY',
+            user.displayName || user.email?.split('@')[0] || 'XXX',
           email: user.email || 'xxx.yyy@example.com',
           phoneNumber: user.phoneNumber || '+91 98765 43210',
           photoURL: user.photoURL || '',
@@ -453,6 +643,20 @@ export default function App() {
             handleFirestoreError(err, OperationType.GET, dashPath);
           }
         );
+
+        // Subscribe to user's private Calendar Notes & Expenditures in Firestore
+        unsubNotes = subscribeToUserNotes(user.uid, (notesList) => {
+          setCalendarNotes(notesList);
+          saveLocalNotes(notesList);
+        });
+
+        unsubExpenditures = subscribeToUserExpenditures(
+          user.uid,
+          (expList) => {
+            setCalendarExpenditures(expList);
+            saveLocalExpenditures(expList);
+          }
+        );
       } catch (err) {
         console.error('Auth/Dashboard initialization error:', err);
       }
@@ -461,10 +665,14 @@ export default function App() {
     return () => {
       unsubAuth();
       if (unsubDashboard) unsubDashboard();
+      if (unsubNotes) unsubNotes();
+      if (unsubExpenditures) unsubExpenditures();
     };
   }, [saveDashboardToFirestore]);
 
-  // Compute stats for a given task/year/month
+  // Compute stats for a given task/year/month:
+  // Percentage calculation is based upon ALL dates of the month.
+  // Only Green ('completed') is considered completed; Red, Yellow (Skipped), and Unmarked are unconsidered.
   const getTaskMonthStats = useCallback(
     (taskName: string, year: number, month: number) => {
       const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -480,11 +688,7 @@ export default function App() {
         else if (status === 'skipped') skipped++;
       }
 
-      const totalEvaluated = completed + notCompleted;
-      const rate =
-        totalEvaluated > 0
-          ? Math.round((completed / totalEvaluated) * 100)
-          : 0;
+      const rate = computeMonthCompletionPercentage(completed, year, month);
       return { completed, notCompleted, skipped, rate, daysInMonth };
     },
     [appState.records]
@@ -494,6 +698,17 @@ export default function App() {
     appState.activeTask,
     appState.currentYear,
     appState.currentMonth
+  );
+
+  // Recalculate Monthly Expenditure Summary from saved expenditure records for the active month & year
+  const monthlyExpSummary = useMemo(
+    () =>
+      computeMonthlyExpenditureSummary(
+        calendarExpenditures,
+        appState.currentYear,
+        appState.currentMonth
+      ),
+    [calendarExpenditures, appState.currentYear, appState.currentMonth]
   );
 
   let totalCompletedAllTime = 0;
@@ -537,8 +752,368 @@ export default function App() {
     });
   };
 
+  // Context Menu Helpers (Desktop Right-Click, Mobile Long-Press / Menu Icon, Keyboard)
+  const openContextMenuAt = useCallback(
+    (dayNumber: number, clientX: number, clientY: number) => {
+      const menuWidth = 196;
+      const menuHeight = 148;
+      const clampedX = Math.max(
+        8,
+        Math.min(clientX, window.innerWidth - menuWidth - 8)
+      );
+      const clampedY = Math.max(
+        8,
+        Math.min(clientY, window.innerHeight - menuHeight - 8)
+      );
+      const dateKey = toDateKey(
+        appState.currentYear,
+        appState.currentMonth,
+        dayNumber
+      );
+      setAppState((prev) => ({ ...prev, selectedDay: dayNumber }));
+      setContextMenu({
+        day: dayNumber,
+        dateKey,
+        x: clampedX,
+        y: clampedY,
+      });
+    },
+    [appState.currentMonth, appState.currentYear]
+  );
+
+  const handleCellContextMenu = (
+    e: React.MouseEvent<HTMLDivElement>,
+    dayNumber: number
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openContextMenuAt(dayNumber, e.clientX, e.clientY);
+  };
+
+  const handleCellTouchStart = (
+    e: React.TouchEvent<HTMLDivElement>,
+    dayNumber: number
+  ) => {
+    const touch = e.touches[0];
+    if (!touch) return;
+    const x = touch.clientX;
+    const y = touch.clientY;
+    if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+    longPressTimerRef.current = setTimeout(() => {
+      openContextMenuAt(dayNumber, x, y);
+    }, 450);
+  };
+
+  const handleCellTouchEnd = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const handleCellKeyDown = (
+    e: React.KeyboardEvent<HTMLDivElement>,
+    dayNumber: number
+  ) => {
+    if (e.key === 'ContextMenu' || (e.key === 'Enter' && e.shiftKey) || e.key === 'm') {
+      e.preventDefault();
+      const rect = e.currentTarget.getBoundingClientRect();
+      openContextMenuAt(dayNumber, rect.left + rect.width / 2, rect.top + rect.height / 2);
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      handleDayCellClick(dayNumber);
+    }
+  };
+
+  // Open Modals for Selected Day
+  const openAddNoteModal = (dayNumber: number, noteToEdit?: CalendarNoteItem) => {
+    setContextMenu(null);
+    setNoteTargetDay(dayNumber);
+    setNoteError(null);
+    if (noteToEdit) {
+      setEditingNoteId(noteToEdit.noteId);
+      setNoteTitleInput(noteToEdit.title);
+      setNoteDescInput(noteToEdit.description);
+    } else {
+      setEditingNoteId(null);
+      setNoteTitleInput('');
+      setNoteDescInput('');
+    }
+    setNoteModalOpen(true);
+  };
+
+  const openAddExpenditureModal = (
+    dayNumber: number,
+    expToEdit?: CalendarExpenditureItem
+  ) => {
+    setContextMenu(null);
+    setExpTargetDay(dayNumber);
+    setExpError(null);
+    if (expToEdit) {
+      setEditingExpId(expToEdit.expenditureId);
+      setExpTitleInput(expToEdit.title);
+      setExpAmountInput(String(expToEdit.amount));
+      setExpCategoryInput(expToEdit.category || '');
+    } else {
+      setEditingExpId(null);
+      setExpTitleInput('');
+      setExpAmountInput('');
+      setExpCategoryInput('');
+    }
+    setExpModalOpen(true);
+  };
+
+  const openViewDetailsModal = (dayNumber: number) => {
+    setContextMenu(null);
+    setDetailsTargetDay(dayNumber);
+    setConfirmDeleteTarget(null);
+    setDetailsModalOpen(true);
+  };
+
+  // Save Note (Create or Update)
+  const handleSaveNoteSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (noteSubmitting) return;
+
+    const cleanTitle = noteTitleInput.trim();
+    const cleanDesc = noteDescInput.trim();
+
+    if (!cleanTitle) {
+      setNoteError('Please enter a note title.');
+      return;
+    }
+
+    setNoteError(null);
+    setNoteSubmitting(true);
+    const dateKey = toDateKey(
+      appState.currentYear,
+      appState.currentMonth,
+      noteTargetDay
+    );
+
+    try {
+      if (authUser) {
+        if (editingNoteId) {
+          await updateCalendarNoteInFirestore(authUser.uid, editingNoteId, {
+            title: cleanTitle,
+            description: cleanDesc,
+          });
+          showToast('Note updated!');
+        } else {
+          await createCalendarNoteInFirestore(authUser.uid, {
+            date: dateKey,
+            title: cleanTitle,
+            description: cleanDesc,
+          });
+          showToast('Note saved!');
+        }
+      } else {
+        const nowIso = new Date().toISOString();
+        let nextNotes: CalendarNoteItem[];
+        if (editingNoteId) {
+          nextNotes = calendarNotes.map((n) =>
+            n.noteId === editingNoteId
+              ? {
+                  ...n,
+                  title: cleanTitle,
+                  description: cleanDesc,
+                  updatedAt: nowIso,
+                }
+              : n
+          );
+          showToast('Note updated!');
+        } else {
+          const newItem: CalendarNoteItem = {
+            noteId: generateSafeId('note'),
+            uid: backendSession?.uid || 'guest',
+            date: dateKey,
+            title: cleanTitle,
+            description: cleanDesc,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          };
+          nextNotes = [...calendarNotes, newItem];
+          showToast('Note saved!');
+        }
+        setCalendarNotes(nextNotes);
+        saveLocalNotes(nextNotes);
+        if (backendSession?.token) {
+          await saveDashboardToBackend(appState, nextNotes, calendarExpenditures);
+        }
+      }
+      setNoteModalOpen(false);
+    } catch (err) {
+      setNoteError(
+        err instanceof Error ? err.message : 'Failed to save note. Please try again.'
+      );
+    } finally {
+      setNoteSubmitting(false);
+    }
+  };
+
+  // Save Expenditure (Create or Update)
+  const handleSaveExpenditureSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (expSubmitting) return;
+
+    const cleanTitle = expTitleInput.trim();
+    const rawAmountStr = expAmountInput.trim();
+
+    if (!cleanTitle) {
+      setExpError('Please enter an expenditure title or description.');
+      return;
+    }
+    if (rawAmountStr === '') {
+      setExpError('Please enter an amount in Indian Rupees (₹).');
+      return;
+    }
+
+    const parsedAmount = Number(rawAmountStr);
+    if (!Number.isFinite(parsedAmount) || parsedAmount < 0) {
+      setExpError('Please enter a valid non-negative amount (0 or greater).');
+      return;
+    }
+    if (parsedAmount > 100000000) {
+      setExpError('Amount cannot exceed ₹10,00,00,000.');
+      return;
+    }
+
+    const roundedAmount = Math.round(parsedAmount * 100) / 100;
+    const cleanCategory = expCategoryInput.trim();
+
+    setExpError(null);
+    setExpSubmitting(true);
+    const dateKey = toDateKey(
+      appState.currentYear,
+      appState.currentMonth,
+      expTargetDay
+    );
+    const monthKey = toMonthKey(appState.currentYear, appState.currentMonth);
+
+    try {
+      if (authUser) {
+        if (editingExpId) {
+          await updateCalendarExpenditureInFirestore(authUser.uid, editingExpId, {
+            title: cleanTitle,
+            amount: roundedAmount,
+            category: cleanCategory,
+          });
+          showToast('Expenditure updated!');
+        } else {
+          await createCalendarExpenditureInFirestore(authUser.uid, {
+            date: dateKey,
+            title: cleanTitle,
+            amount: roundedAmount,
+            category: cleanCategory,
+          });
+          showToast(`Expenditure of ${formatINR(roundedAmount)} saved!`);
+        }
+      } else {
+        const nowIso = new Date().toISOString();
+        let nextExp: CalendarExpenditureItem[];
+        if (editingExpId) {
+          nextExp = calendarExpenditures.map((item) =>
+            item.expenditureId === editingExpId
+              ? {
+                  ...item,
+                  title: cleanTitle,
+                  amount: roundedAmount,
+                  category: cleanCategory,
+                  updatedAt: nowIso,
+                }
+              : item
+          );
+          showToast('Expenditure updated!');
+        } else {
+          const newItem: CalendarExpenditureItem = {
+            expenditureId: generateSafeId('exp'),
+            uid: backendSession?.uid || 'guest',
+            date: dateKey,
+            monthKey,
+            title: cleanTitle,
+            amount: roundedAmount,
+            category: cleanCategory,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          };
+          nextExp = [...calendarExpenditures, newItem];
+          showToast(`Expenditure of ${formatINR(roundedAmount)} saved!`);
+        }
+        setCalendarExpenditures(nextExp);
+        saveLocalExpenditures(nextExp);
+        if (backendSession?.token) {
+          await saveDashboardToBackend(appState, calendarNotes, nextExp);
+        }
+      }
+      setExpModalOpen(false);
+    } catch (err) {
+      setExpError(
+        err instanceof Error
+          ? err.message
+          : 'Failed to save expenditure. Please try again.'
+      );
+    } finally {
+      setExpSubmitting(false);
+    }
+  };
+
+  // Confirmed Delete of Note or Expenditure
+  const handleConfirmDeleteItem = async () => {
+    if (!confirmDeleteTarget || deletingItem) return;
+    setDeletingItem(true);
+    try {
+      if (confirmDeleteTarget.type === 'note') {
+        if (authUser) {
+          await deleteCalendarNoteFromFirestore(
+            authUser.uid,
+            confirmDeleteTarget.id
+          );
+        } else {
+          const nextNotes = calendarNotes.filter(
+            (n) => n.noteId !== confirmDeleteTarget.id
+          );
+          setCalendarNotes(nextNotes);
+          saveLocalNotes(nextNotes);
+          if (backendSession?.token) {
+            await saveDashboardToBackend(
+              appState,
+              nextNotes,
+              calendarExpenditures
+            );
+          }
+        }
+        showToast('Note deleted.');
+      } else {
+        if (authUser) {
+          await deleteCalendarExpenditureFromFirestore(
+            authUser.uid,
+            confirmDeleteTarget.id
+          );
+        } else {
+          const nextExp = calendarExpenditures.filter(
+            (e) => e.expenditureId !== confirmDeleteTarget.id
+          );
+          setCalendarExpenditures(nextExp);
+          saveLocalExpenditures(nextExp);
+          if (backendSession?.token) {
+            await saveDashboardToBackend(appState, calendarNotes, nextExp);
+          }
+        }
+        showToast('Expenditure deleted.');
+      }
+      setConfirmDeleteTarget(null);
+    } catch (err) {
+      showToast(
+        err instanceof Error ? err.message : 'Failed to delete entry.'
+      );
+    } finally {
+      setDeletingItem(false);
+    }
+  };
+
   // Month & Year Navigation
   const changeMonth = (delta: number) => {
+    setContextMenu(null);
     updateStateAndPersist((prev) => {
       let newMonth = prev.currentMonth + delta;
       let newYear = prev.currentYear;
@@ -562,6 +1137,7 @@ export default function App() {
   };
 
   const changeYear = (delta: number) => {
+    setContextMenu(null);
     updateStateAndPersist((prev) => ({
       ...prev,
       currentYear: prev.currentYear + delta,
@@ -570,6 +1146,7 @@ export default function App() {
 
   const jumpToOct2026 = () => {
     setMonthPickerOpen(false);
+    setContextMenu(null);
     updateStateAndPersist((prev) => ({
       ...prev,
       currentYear: 2026,
@@ -618,56 +1195,6 @@ export default function App() {
       };
     });
     showToast(`Task "${taskName}" removed.`);
-  };
-
-  // Bulk Month Actions
-  const markAllMonth = (status: 'completed') => {
-    const daysInMonth = new Date(
-      appState.currentYear,
-      appState.currentMonth + 1,
-      0
-    ).getDate();
-    updateStateAndPersist((prev) => {
-      const nextRecords = { ...prev.records };
-      for (let d = 1; d <= daysInMonth; d++) {
-        const key = getRecordKey(
-          prev.activeTask,
-          prev.currentYear,
-          prev.currentMonth,
-          d
-        );
-        const existing = nextRecords[key] || { status: null, note: '' };
-        nextRecords[key] = { ...existing, status };
-      }
-      return { ...prev, records: nextRecords };
-    });
-    showToast(
-      `Marked all days in ${MONTH_NAMES[appState.currentMonth]} as Completed!`
-    );
-  };
-
-  const clearCurrentTaskMonth = () => {
-    const daysInMonth = new Date(
-      appState.currentYear,
-      appState.currentMonth + 1,
-      0
-    ).getDate();
-    updateStateAndPersist((prev) => {
-      const nextRecords = { ...prev.records };
-      for (let d = 1; d <= daysInMonth; d++) {
-        const key = getRecordKey(
-          prev.activeTask,
-          prev.currentYear,
-          prev.currentMonth,
-          d
-        );
-        delete nextRecords[key];
-      }
-      return { ...prev, records: nextRecords };
-    });
-    showToast(
-      `Cleared ${appState.activeTask} entries for ${MONTH_NAMES[appState.currentMonth]}.`
-    );
   };
 
   // Profile Modal & Photo Upload Handlers
@@ -744,10 +1271,10 @@ export default function App() {
     const text =
       type === 'email' ? appState.profile.email : appState.profile.phone;
     navigator.clipboard?.writeText(text).catch(() => {});
-    showToast(`Copied ${type === 'email' ? 'Email ID' : 'Phone Number'}!`);
+    showToast(`Copied ${type === 'email' ? 'Email' : 'Phone Number'}!`);
   };
 
-  // Authentication Handlers (Google Sign-In + Email & Password Sign Up / Sign In)
+  // Authentication Handlers (Google Sign-In + Firebase Email & Password Sign Up / Sign In)
   const handleGoogleSignIn = async () => {
     setAuthError(null);
     setAuthSubmitting(true);
@@ -770,7 +1297,7 @@ export default function App() {
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
       if (!raw.includes('auth/popup-closed-by-user')) {
-        setAuthError(raw.replace('Firebase: ', ''));
+        setAuthError(formatFirebaseAuthError(err));
       }
     } finally {
       setAuthSubmitting(false);
@@ -792,14 +1319,68 @@ export default function App() {
 
     setAuthSubmitting(true);
     try {
-      const endpoint =
-        authTab === 'signup' ? '/api/auth/signup' : '/api/auth/signin';
       const mName = authMainName.trim() || 'XXX';
       const sName = authSurname.trim() || 'YYY';
       const phoneVal = authPhone.trim() || '+91 98765 43210';
 
-      // 1. Authenticate with Backend Persistent Account Database
-      const apiRes = await fetch(endpoint, {
+      // 1. Primary Authentication: Firebase Authentication + Cloud Firestore
+      if (authTab === 'signup') {
+        const cred = await createUserWithEmailAndPassword(
+          auth,
+          cleanEmail,
+          authPassword
+        );
+        await updateProfile(cred.user, {
+          displayName: mName,
+        }).catch(() => {});
+
+        await ensureUserProfileDoc({
+          uid: cred.user.uid,
+          displayName: mName,
+          email: cleanEmail,
+          phoneNumber: phoneVal,
+          photoURL: PRESET_AVATARS[0],
+        });
+
+        const initialDashboardState: TrackerAppState = {
+          ...appState,
+          profile: {
+            mainName: mName,
+            surname: sName,
+            email: cleanEmail,
+            phone: phoneVal,
+            photo: appState.profile.photo || PRESET_AVATARS[0],
+          },
+        };
+        setAppState(initialDashboardState);
+        await saveDashboardToFirestore(initialDashboardState, cred.user);
+
+        // Migrate any guest notes/expenditures created before signup to Firestore
+        const guestNotes = calendarNotes.filter((n) => n.uid === 'guest');
+        for (const gn of guestNotes) {
+          await createCalendarNoteInFirestore(cred.user.uid, {
+            date: gn.date,
+            title: gn.title,
+            description: gn.description,
+          }).catch(() => {});
+        }
+        const guestExps = calendarExpenditures.filter((x) => x.uid === 'guest');
+        for (const ge of guestExps) {
+          await createCalendarExpenditureInFirestore(cred.user.uid, {
+            date: ge.date,
+            title: ge.title,
+            amount: ge.amount,
+            category: ge.category,
+          }).catch(() => {});
+        }
+      } else {
+        await signInWithEmailAndPassword(auth, cleanEmail, authPassword);
+      }
+
+      // 2. Optional safe sync with backend API if running in full-stack mode (never throws on 404/HTML)
+      const endpoint =
+        authTab === 'signup' ? '/api/auth/signup' : '/api/auth/signin';
+      const { ok, data } = await safeFetchJson(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -811,74 +1392,24 @@ export default function App() {
           photo: PRESET_AVATARS[0],
         }),
       });
-      const apiData = await apiRes.json();
-      if (!apiRes.ok) {
-        throw new Error(apiData.error || 'Authentication failed.');
+      if (ok && data && typeof data.token === 'string') {
+        sessionStorage.setItem(SESSION_TOKEN_KEY, data.token);
+        setBackendSession({
+          uid: String(data.uid || ''),
+          email: String(data.email || cleanEmail),
+          token: data.token,
+        });
       }
-
-      // 2. Also attempt Firebase Email/Password Auth if enabled in Firebase Console
-      try {
-        if (authTab === 'signup') {
-          const cred = await createUserWithEmailAndPassword(
-            auth,
-            cleanEmail,
-            authPassword
-          );
-          await updateProfile(cred.user, {
-            displayName: `${mName} ${sName}`.trim(),
-          }).catch(() => {});
-          await ensureUserProfileDoc({
-            uid: cred.user.uid,
-            displayName: `${mName} ${sName}`.trim(),
-            email: cleanEmail,
-            phoneNumber: phoneVal,
-            photoURL: PRESET_AVATARS[0],
-          });
-        } else {
-          await signInWithEmailAndPassword(auth, cleanEmail, authPassword);
-        }
-      } catch {
-        // If Email/Password provider is not toggled on in Firebase Console yet,
-        // backend session authentication continues seamlessly across devices.
-      }
-
-      // 3. Apply the user's personal dashboard
-      sessionStorage.setItem(SESSION_TOKEN_KEY, apiData.token);
-      setBackendSession({
-        uid: apiData.uid,
-        email: apiData.email,
-        token: apiData.token,
-      });
-
-      const d = apiData.dashboard;
-      setAppState({
-        profile: {
-          mainName: d.profile?.mainName || mName,
-          surname: d.profile?.surname || sName,
-          email: d.profile?.email || cleanEmail,
-          phone: d.profile?.phone || phoneVal,
-          photo: d.profile?.photo || PRESET_AVATARS[0],
-        },
-        tasks:
-          Array.isArray(d.tasks) && d.tasks.length > 0 ? d.tasks : ['General'],
-        activeTask: d.activeTask || 'General',
-        currentYear: typeof d.currentYear === 'number' ? d.currentYear : 2026,
-        currentMonth: typeof d.currentMonth === 'number' ? d.currentMonth : 9,
-        selectedDay: typeof d.selectedDay === 'number' ? d.selectedDay : 25,
-        records: d.records && typeof d.records === 'object' ? d.records : {},
-      });
 
       setAuthPassword('');
       setAuthModalOpen(false);
       showToast(
         authTab === 'signup'
-          ? `Account created & dashboard saved for ${cleanEmail}`
+          ? `Account created & saved for ${cleanEmail}`
           : `Signed in as ${cleanEmail}`
       );
     } catch (err) {
-      setAuthError(
-        err instanceof Error ? err.message : 'Authentication failed.'
-      );
+      setAuthError(formatFirebaseAuthError(err));
     } finally {
       setAuthSubmitting(false);
     }
@@ -891,6 +1422,10 @@ export default function App() {
     setBackendSession(null);
     sessionStorage.removeItem(SESSION_TOKEN_KEY);
     setAppState(JSON.parse(JSON.stringify(DEFAULT_STATE)));
+    setCalendarNotes([]);
+    setCalendarExpenditures([]);
+    saveLocalNotes([]);
+    saveLocalExpenditures([]);
     setAuthModalOpen(false);
     showToast('Logged out successfully.');
   };
@@ -909,8 +1444,26 @@ export default function App() {
 
   const mainName = (appState.profile.mainName || 'XXX').trim();
   const currentMonthName = MONTH_NAMES[appState.currentMonth];
-
   const signedInEmail = authUser?.email || backendSession?.email || null;
+
+  // Date Details Modal computed items
+  const detailsDateKey = toDateKey(
+    appState.currentYear,
+    appState.currentMonth,
+    detailsTargetDay
+  );
+  const detailsNotes = useMemo(
+    () => getNotesForDate(calendarNotes, detailsDateKey),
+    [calendarNotes, detailsDateKey]
+  );
+  const detailsExpenditures = useMemo(
+    () => getExpendituresForDate(calendarExpenditures, detailsDateKey),
+    [calendarExpenditures, detailsDateKey]
+  );
+  const detailsDailyExpInfo = useMemo(
+    () => getDailyExpenditureInfo(calendarExpenditures, detailsDateKey),
+    [calendarExpenditures, detailsDateKey]
+  );
 
   return (
     <div className="w-full min-h-screen lg:h-screen lg:max-h-screen lg:overflow-hidden flex flex-col bg-[#0b0f19] text-slate-100 selection:bg-sky-500 selection:text-white">
@@ -987,18 +1540,18 @@ export default function App() {
 
       {/* FULL-WIDTH MAIN WORKSPACE — Fits on 1 screen on Desktop without scrolling */}
       <div className="flex-1 min-h-0 w-full max-w-none flex flex-col lg:flex-row gap-3.5 p-3 sm:p-4 overflow-y-auto lg:overflow-hidden">
-        {/* LEFT SIDEBAR: CLEAN USER PROFILE PANEL */}
+        {/* LEFT SIDEBAR: CLEAN USER PROFILE PANEL + MONTHLY EXPENDITURE SUMMARY */}
         {!sidebarHidden && (
-          <aside className="w-full lg:w-[260px] xl:w-[280px] shrink-0 flex flex-col min-h-0">
+          <aside className="w-full lg:w-[265px] xl:w-[285px] shrink-0 flex flex-col min-h-0">
             <div className="bg-[#0f172a] border border-slate-800/90 rounded-xl overflow-hidden shadow-lg flex flex-col h-full justify-between">
-              <div>
-                {/* Clean Top Cover Accent (no background text clutter) */}
-                <div className="h-12 sidebar-cover" />
+              <div className="overflow-y-auto">
+                {/* Clean Top Cover Accent */}
+                <div className="h-10 sidebar-cover" />
 
                 {/* Avatar + Name Section */}
-                <div className="px-4 pt-0 pb-4 flex flex-col items-center text-center relative">
-                  <div className="relative -mt-8 mb-2.5 group">
-                    <div className="w-18 h-18 rounded-full p-0.5 bg-gradient-to-tr from-sky-500 to-indigo-500 shadow-md">
+                <div className="px-4 pt-0 pb-3 flex flex-col items-center text-center relative">
+                  <div className="relative -mt-7 mb-2 group">
+                    <div className="w-16 h-16 rounded-full p-0.5 bg-gradient-to-tr from-sky-500 to-indigo-500 shadow-md">
                       <img
                         src={appState.profile.photo || PRESET_AVATARS[0]}
                         alt="User Profile Photo"
@@ -1030,19 +1583,19 @@ export default function App() {
                     {mainName}
                   </h2>
 
-                  <p className="mt-1 text-xs text-emerald-400 font-medium">
+                  <p className="mt-0.5 text-xs text-emerald-400 font-medium">
                     Total Completed: {totalCompletedAllTime}{' '}
                     {totalCompletedAllTime === 1 ? 'Day' : 'Days'}
                   </p>
 
-                  <div className="w-full h-px bg-slate-800/80 my-3.5" />
+                  <div className="w-full h-px bg-slate-800/80 my-2.5" />
 
                   {/* Clean Contact Information List */}
-                  <div className="w-full space-y-2.5 text-left">
+                  <div className="w-full space-y-2 text-left">
                     {/* Name Field */}
-                    <div className="bg-[#131c2e] border border-slate-800/80 rounded-lg px-3 py-2 flex items-center gap-2.5">
-                      <div className="w-7 h-7 rounded-md bg-sky-500/10 text-sky-400 flex items-center justify-center shrink-0">
-                        <i className="fa-solid fa-user text-xs"></i>
+                    <div className="bg-[#131c2e] border border-slate-800/80 rounded-lg px-3 py-1.5 flex items-center gap-2.5">
+                      <div className="w-6 h-6 rounded-md bg-sky-500/10 text-sky-400 flex items-center justify-center shrink-0">
+                        <i className="fa-solid fa-user text-[11px]"></i>
                       </div>
                       <div className="min-w-0 flex-1">
                         <p className="text-[10px] uppercase tracking-wider font-medium text-slate-400">
@@ -1055,9 +1608,9 @@ export default function App() {
                     </div>
 
                     {/* Email Field */}
-                    <div className="bg-[#131c2e] border border-slate-800/80 rounded-lg px-3 py-2 flex items-center gap-2.5">
-                      <div className="w-7 h-7 rounded-md bg-indigo-500/10 text-indigo-400 flex items-center justify-center shrink-0">
-                        <i className="fa-solid fa-envelope text-xs"></i>
+                    <div className="bg-[#131c2e] border border-slate-800/80 rounded-lg px-3 py-1.5 flex items-center gap-2.5">
+                      <div className="w-6 h-6 rounded-md bg-indigo-500/10 text-indigo-400 flex items-center justify-center shrink-0">
+                        <i className="fa-solid fa-envelope text-[11px]"></i>
                       </div>
                       <div className="min-w-0 flex-1">
                         <p className="text-[10px] uppercase tracking-wider font-medium text-slate-400">
@@ -1078,9 +1631,9 @@ export default function App() {
                     </div>
 
                     {/* Phone Number Field */}
-                    <div className="bg-[#131c2e] border border-slate-800/80 rounded-lg px-3 py-2 flex items-center gap-2.5">
-                      <div className="w-7 h-7 rounded-md bg-emerald-500/10 text-emerald-400 flex items-center justify-center shrink-0">
-                        <i className="fa-solid fa-phone text-xs"></i>
+                    <div className="bg-[#131c2e] border border-slate-800/80 rounded-lg px-3 py-1.5 flex items-center gap-2.5">
+                      <div className="w-6 h-6 rounded-md bg-emerald-500/10 text-emerald-400 flex items-center justify-center shrink-0">
+                        <i className="fa-solid fa-phone text-[11px]"></i>
                       </div>
                       <div className="min-w-0 flex-1">
                         <p className="text-[10px] uppercase tracking-wider font-medium text-slate-400">
@@ -1100,11 +1653,56 @@ export default function App() {
                       </button>
                     </div>
                   </div>
+
+                  {/* MONTHLY TOTAL EXPENDITURE SUMMARY CARD */}
+                  <div className="w-full mt-3 bg-[#131c2e] border border-slate-800/90 rounded-xl p-3 text-left">
+                    <div className="flex items-center justify-between gap-1.5 mb-2">
+                      <span className="text-[11px] font-bold text-slate-200 tracking-tight truncate">
+                        Monthly Expenditure — {currentMonthName}{' '}
+                        {appState.currentYear}
+                      </span>
+                    </div>
+                    <div className="space-y-1.5 text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-400">
+                          Total Expenditure:
+                        </span>
+                        <span
+                          data-testid="monthly-total-expenditure"
+                          className="font-bold text-emerald-400"
+                        >
+                          {formatINR(monthlyExpSummary.totalExpenditure)}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-400">
+                          Days with Expenses:
+                        </span>
+                        <span
+                          data-testid="monthly-days-with-expenses"
+                          className="font-semibold text-slate-200"
+                        >
+                          {monthlyExpSummary.daysWithExpenses}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-400">
+                          Average Daily Expenditure:
+                        </span>
+                        <span
+                          data-testid="monthly-average-expenditure"
+                          className="font-semibold text-sky-400"
+                        >
+                          {formatINR(monthlyExpSummary.averageDailyExpenditure)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
               {/* Bottom Edit Profile Button */}
-              <div className="px-4 pb-4">
+              <div className="px-4 pb-3 pt-1">
                 <button
                   type="button"
                   onClick={openProfileModal}
@@ -1122,20 +1720,38 @@ export default function App() {
         <main className="flex-1 min-w-0 min-h-0 flex flex-col">
           <div className="flex-1 min-h-0 flex flex-col bg-[#0f172a] border border-slate-800/90 rounded-xl overflow-hidden shadow-lg">
             {/* 1. TOP TRACKER HEADER BANNER */}
-            <div className="tracker-header-banner py-2.5 px-4 flex items-center justify-between shrink-0">
+            <div className="tracker-header-banner py-2 px-4 flex flex-wrap items-center justify-between gap-2 shrink-0">
               <div className="flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-sky-400"></span>
                 <h2 className="text-xs sm:text-sm font-semibold text-slate-200 tracking-wider uppercase">
-                  {appState.activeTask} — {currentMonthName} {appState.currentYear}
+                  {appState.activeTask} — {currentMonthName}{' '}
+                  {appState.currentYear}
                 </h2>
               </div>
-              <span className="text-xs text-slate-400 font-medium hidden sm:inline">
-                Monthly Progress
-              </span>
+
+              {/* Compact Top-Right Monthly Expenditure Summary & Hint */}
+              <div className="flex flex-wrap items-center gap-3 text-xs">
+                <div className="flex items-center gap-2 bg-[#131c2e] border border-slate-800 px-2.5 py-1 rounded-lg">
+                  <span className="text-slate-400 hidden sm:inline">
+                    {currentMonthName} {appState.currentYear} Expense:
+                  </span>
+                  <span className="font-bold text-emerald-400">
+                    {formatINR(monthlyExpSummary.totalExpenditure)}
+                  </span>
+                  <span className="text-slate-600">·</span>
+                  <span className="text-slate-300 text-[11px]">
+                    {monthlyExpSummary.daysWithExpenses}d
+                  </span>
+                  <span className="text-slate-600">·</span>
+                  <span className="text-sky-400 text-[11px]">
+                    Avg {formatINR(monthlyExpSummary.averageDailyExpenditure)}
+                  </span>
+                </div>
+              </div>
             </div>
 
             {/* 2. COMPACT TASK TABS, MONTH NAVIGATION & STATS BAR */}
-            <div className="px-4 py-2.5 bg-[#0f172a] border-b border-slate-800/80 shrink-0 flex flex-wrap items-center justify-between gap-3">
+            <div className="px-4 py-2 bg-[#0f172a] border-b border-slate-800/80 shrink-0 flex flex-wrap items-center justify-between gap-2.5">
               {/* Left: Task Tabs (Default: General + "+ Add Task") */}
               <div className="flex flex-wrap items-center gap-1.5">
                 {appState.tasks.map((taskName) => {
@@ -1288,7 +1904,7 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Right: COMPLETED | NOT COMPLETED | SKIPPED | SUCCESS RATE */}
+              {/* Right: COMPLETED | NOT COMPLETED | SKIPPED | SUCCESS RATE (based on all days of month) */}
               <div className="flex flex-wrap items-center gap-2">
                 <div className="stat-completed px-3 py-1 rounded-lg min-w-[84px] text-center">
                   <div className="text-[10px] font-semibold uppercase tracking-wider text-emerald-400">
@@ -1317,7 +1933,10 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="stat-rate px-3 py-1 rounded-lg min-w-[92px] text-center">
+                <div
+                  title={`Completed ${activeStats.completed} of ${activeStats.daysInMonth} days in ${currentMonthName}`}
+                  className="stat-rate px-3 py-1 rounded-lg min-w-[92px] text-center"
+                >
                   <div className="text-[10px] font-semibold uppercase tracking-wider text-sky-400">
                     Success Rate
                   </div>
@@ -1330,30 +1949,30 @@ export default function App() {
 
             {/* 3. CLEAN DAYS OF WEEK HEADER (SUN - SAT) */}
             <div className="grid grid-cols-7 day-of-week-header border-b border-slate-800/90 shrink-0">
-              <div className="py-2 text-center font-semibold text-[11px] border-r border-slate-800/60">
+              <div className="py-1.5 text-center font-semibold text-[11px] border-r border-slate-800/60">
                 SUN
               </div>
-              <div className="py-2 text-center font-semibold text-[11px] border-r border-slate-800/60">
+              <div className="py-1.5 text-center font-semibold text-[11px] border-r border-slate-800/60">
                 MON
               </div>
-              <div className="py-2 text-center font-semibold text-[11px] border-r border-slate-800/60">
+              <div className="py-1.5 text-center font-semibold text-[11px] border-r border-slate-800/60">
                 TUE
               </div>
-              <div className="py-2 text-center font-semibold text-[11px] border-r border-slate-800/60">
+              <div className="py-1.5 text-center font-semibold text-[11px] border-r border-slate-800/60">
                 WED
               </div>
-              <div className="py-2 text-center font-semibold text-[11px] border-r border-slate-800/60">
+              <div className="py-1.5 text-center font-semibold text-[11px] border-r border-slate-800/60">
                 THU
               </div>
-              <div className="py-2 text-center font-semibold text-[11px] border-r border-slate-800/60">
+              <div className="py-1.5 text-center font-semibold text-[11px] border-r border-slate-800/60">
                 FRI
               </div>
-              <div className="py-2 text-center font-semibold text-[11px]">
+              <div className="py-1.5 text-center font-semibold text-[11px]">
                 SAT
               </div>
             </div>
 
-            {/* 4. 6x7 CALENDAR GRID WITH CLEAN CIRCULAR COLOR-CODED DATES */}
+            {/* 4. 6x7 CALENDAR GRID WITH CIRCULAR DATES + NOTE & EXPENDITURE INDICATORS */}
             <div className="flex-1 min-h-0 grid grid-cols-7 grid-rows-6 bg-[#0b0f19]">
               {Array.from({ length: 42 }).map((_, i) => {
                 const dayNumber = i - firstDayIndex + 1;
@@ -1379,6 +1998,17 @@ export default function App() {
                 const status = normalizeStatus(rawRecord.status);
                 const isSelectedDay = dayNumber === appState.selectedDay;
 
+                const cellDateKey = toDateKey(
+                  appState.currentYear,
+                  appState.currentMonth,
+                  dayNumber
+                );
+                const dayNotes = getNotesForDate(calendarNotes, cellDateKey);
+                const dayExpInfo = getDailyExpenditureInfo(
+                  calendarExpenditures,
+                  cellDateKey
+                );
+
                 let cellStatusClass = '';
                 let circleClass = 'date-circle-unmarked';
 
@@ -1396,11 +2026,59 @@ export default function App() {
                 return (
                   <div
                     key={`day-${dayNumber}`}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`${dayNumber} ${currentMonthName} ${appState.currentYear}${
+                      dayNotes.length > 0 ? ', Notes available' : ''
+                    }${
+                      dayExpInfo.hasEntries
+                        ? `, Expenditure ${formatINR(dayExpInfo.dailyTotal)}`
+                        : ''
+                    }`}
                     onClick={() => handleDayCellClick(dayNumber)}
-                    className={`calendar-cell active-day p-1 flex items-center justify-center cursor-pointer ${cellStatusClass} ${
+                    onContextMenu={(e) => handleCellContextMenu(e, dayNumber)}
+                    onTouchStart={(e) => handleCellTouchStart(e, dayNumber)}
+                    onTouchEnd={handleCellTouchEnd}
+                    onTouchMove={handleCellTouchEnd}
+                    onKeyDown={(e) => handleCellKeyDown(e, dayNumber)}
+                    className={`calendar-cell active-day p-1 flex flex-col items-center justify-center cursor-pointer group focus:outline-none focus:ring-2 focus:ring-sky-400/70 ${cellStatusClass} ${
                       isSelectedDay ? 'selected-day' : ''
                     }`}
                   >
+                    {/* Top-Left Corner: Saved Note Indicator */}
+                    {dayNotes.length > 0 && (
+                      <button
+                        type="button"
+                        title="Notes available — Click to view details"
+                        aria-label="Notes available"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openViewDetailsModal(dayNumber);
+                        }}
+                        className="absolute top-1 left-1 z-20 px-1.5 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/35 border border-amber-400/40 text-amber-300 text-[10px] font-semibold flex items-center gap-1 transition cursor-pointer"
+                      >
+                        <i className="fa-solid fa-note-sticky text-[9px]"></i>
+                        {dayNotes.length > 1 && (
+                          <span className="leading-none">{dayNotes.length}</span>
+                        )}
+                      </button>
+                    )}
+
+                    {/* Top-Right Corner: Accessible Mobile / Quick Context Menu Trigger */}
+                    <button
+                      type="button"
+                      title="Date options (Add Note, Add Expenditure, View Details)"
+                      aria-label={`Open options for ${dayNumber} ${currentMonthName}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        openContextMenuAt(dayNumber, rect.left, rect.bottom + 4);
+                      }}
+                      className="absolute top-1 right-1 z-20 w-5 h-5 rounded bg-slate-800/70 hover:bg-slate-700 text-slate-400 hover:text-slate-100 opacity-60 sm:opacity-0 group-hover:opacity-100 focus:opacity-100 flex items-center justify-center text-[10px] transition cursor-pointer"
+                    >
+                      <i className="fa-solid fa-ellipsis-vertical"></i>
+                    </button>
+
                     {/* Center Circular Color-Coded Date Badge */}
                     <div className={`date-circle ${circleClass}`}>
                       <span>{dayNumber}</span>
@@ -1420,6 +2098,21 @@ export default function App() {
                         </span>
                       )}
                     </div>
+
+                    {/* Bottom Daily Expenditure Indicator (shown when expenditure entry recorded) */}
+                    {dayExpInfo.hasEntries && (
+                      <button
+                        type="button"
+                        title={`Daily expenditure: ${formatINR(dayExpInfo.dailyTotal)} — Click for details`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openViewDetailsModal(dayNumber);
+                        }}
+                        className="mt-0.5 z-20 px-1.5 py-0.2 rounded bg-sky-500/15 hover:bg-sky-500/30 border border-sky-400/30 text-sky-300 text-[9px] sm:text-[10px] font-semibold leading-tight truncate max-w-[92%] transition cursor-pointer"
+                      >
+                        {formatINR(dayExpInfo.dailyTotal)}
+                      </button>
+                    )}
                   </div>
                 );
               })}
@@ -1427,6 +2120,518 @@ export default function App() {
           </div>
         </main>
       </div>
+
+      {/* ========================================== */}
+      {/* FLOATING CALENDAR DATE CONTEXT MENU */}
+      {/* ========================================== */}
+      {contextMenu && (
+        <div
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          onClick={(e) => e.stopPropagation()}
+          className="fixed z-50 w-48 bg-[#111827] border border-slate-700 rounded-xl shadow-2xl overflow-hidden py-1 text-xs"
+        >
+          <div className="px-3 py-1.5 border-b border-slate-800 text-[11px] font-bold text-slate-300 flex items-center justify-between">
+            <span>
+              {formatFullDateDisplay(
+                appState.currentYear,
+                appState.currentMonth,
+                contextMenu.day
+              )}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => openAddNoteModal(contextMenu.day)}
+            className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5 transition cursor-pointer"
+          >
+            <i className="fa-solid fa-note-sticky text-amber-400 w-4 text-center"></i>
+            <span>Add Note</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => openAddExpenditureModal(contextMenu.day)}
+            className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5 transition cursor-pointer"
+          >
+            <i className="fa-solid fa-indian-rupee-sign text-emerald-400 w-4 text-center"></i>
+            <span>Add Expenditure</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => openViewDetailsModal(contextMenu.day)}
+            className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5 border-t border-slate-800/80 transition cursor-pointer"
+          >
+            <i className="fa-solid fa-eye text-sky-400 w-4 text-center"></i>
+            <span>View Details</span>
+          </button>
+        </div>
+      )}
+
+      {/* ========================================== */}
+      {/* MODAL: ADD / EDIT NOTE */}
+      {/* ========================================== */}
+      {noteModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0f172a] border border-slate-700/80 rounded-2xl max-w-md w-full overflow-hidden shadow-2xl">
+            <div className="tracker-header-banner px-5 py-3.5 flex items-center justify-between">
+              <h3 className="font-bold text-slate-100 text-sm sm:text-base tracking-tight flex items-center gap-2">
+                <i className="fa-solid fa-note-sticky text-amber-400"></i>
+                <span>{editingNoteId ? 'Edit Note' : 'Add Note'}</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setNoteModalOpen(false)}
+                className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition cursor-pointer"
+              >
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveNoteSubmit} className="p-5 space-y-4">
+              {noteError && (
+                <div className="p-3 rounded-xl bg-rose-950/70 border border-rose-500/40 text-rose-300 text-xs font-medium">
+                  {noteError}
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">
+                  Selected Date
+                </label>
+                <input
+                  type="text"
+                  readOnly
+                  value={formatFullDateDisplay(
+                    appState.currentYear,
+                    appState.currentMonth,
+                    noteTargetDay
+                  )}
+                  className="w-full px-3.5 py-2 rounded-lg bg-[#0b0f19]/70 border border-slate-800 text-slate-300 text-sm cursor-not-allowed"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Note Title *
+                </label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  maxLength={150}
+                  placeholder="e.g. Exam Preparation / Important Reminder"
+                  value={noteTitleInput}
+                  onChange={(e) => setNoteTitleInput(e.target.value)}
+                  className="w-full px-3.5 py-2 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Note Description
+                </label>
+                <textarea
+                  rows={3}
+                  maxLength={2000}
+                  placeholder="Write details for this date..."
+                  value={noteDescInput}
+                  onChange={(e) => setNoteDescInput(e.target.value)}
+                  className="w-full px-3.5 py-2 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400 resize-none"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setNoteModalOpen(false)}
+                  className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={noteSubmitting}
+                  className="px-5 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold tracking-wide shadow-md cursor-pointer disabled:opacity-50"
+                >
+                  {noteSubmitting ? 'Saving...' : 'Save Note'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================== */}
+      {/* MODAL: ADD / EDIT EXPENDITURE */}
+      {/* ========================================== */}
+      {expModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0f172a] border border-slate-700/80 rounded-2xl max-w-md w-full overflow-hidden shadow-2xl">
+            <div className="tracker-header-banner px-5 py-3.5 flex items-center justify-between">
+              <h3 className="font-bold text-slate-100 text-sm sm:text-base tracking-tight flex items-center gap-2">
+                <i className="fa-solid fa-indian-rupee-sign text-emerald-400"></i>
+                <span>
+                  {editingExpId ? 'Edit Expenditure' : 'Add Expenditure'}
+                </span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setExpModalOpen(false)}
+                className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition cursor-pointer"
+              >
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+
+            <form
+              onSubmit={handleSaveExpenditureSubmit}
+              className="p-5 space-y-4"
+            >
+              {expError && (
+                <div className="p-3 rounded-xl bg-rose-950/70 border border-rose-500/40 text-rose-300 text-xs font-medium">
+                  {expError}
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">
+                  Selected Date
+                </label>
+                <input
+                  type="text"
+                  readOnly
+                  value={formatFullDateDisplay(
+                    appState.currentYear,
+                    appState.currentMonth,
+                    expTargetDay
+                  )}
+                  className="w-full px-3.5 py-2 rounded-lg bg-[#0b0f19]/70 border border-slate-800 text-slate-300 text-sm cursor-not-allowed"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Expenditure Title or Description *
+                </label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  maxLength={150}
+                  placeholder="e.g. Groceries, Transport, Study Books"
+                  value={expTitleInput}
+                  onChange={(e) => setExpTitleInput(e.target.value)}
+                  className="w-full px-3.5 py-2 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-emerald-400"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">
+                    Amount (in ₹) *
+                  </label>
+                  <input
+                    type="number"
+                    required
+                    min="0"
+                    step="any"
+                    placeholder="e.g. 500"
+                    value={expAmountInput}
+                    onChange={(e) => setExpAmountInput(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-emerald-400"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">
+                    Category (Optional)
+                  </label>
+                  <select
+                    value={expCategoryInput}
+                    onChange={(e) => setExpCategoryInput(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-emerald-400"
+                  >
+                    <option value="">None (Optional)</option>
+                    {EXPENSE_CATEGORIES.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setExpModalOpen(false)}
+                  className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={expSubmitting}
+                  className="px-5 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold tracking-wide shadow-md cursor-pointer disabled:opacity-50"
+                >
+                  {expSubmitting ? 'Saving...' : 'Save Expenditure'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================== */}
+      {/* MODAL: VIEW DETAILS FOR SELECTED DATE */}
+      {/* ========================================== */}
+      {detailsModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0f172a] border border-slate-700/80 rounded-2xl max-w-lg w-full max-h-[88vh] flex flex-col overflow-hidden shadow-2xl">
+            <div className="tracker-header-banner px-5 py-3.5 flex items-center justify-between shrink-0">
+              <div>
+                <h3 className="font-bold text-slate-100 text-sm sm:text-base tracking-tight">
+                  Date:{' '}
+                  {formatFullDateDisplay(
+                    appState.currentYear,
+                    appState.currentMonth,
+                    detailsTargetDay
+                  )}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setDetailsModalOpen(false);
+                  setConfirmDeleteTarget(null);
+                }}
+                className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition cursor-pointer"
+              >
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+
+            {/* Quick Add Actions inside View Details */}
+            <div className="px-5 py-2.5 bg-[#111827] border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDetailsModalOpen(false);
+                    openAddNoteModal(detailsTargetDay);
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/30 text-amber-300 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                >
+                  <i className="fa-solid fa-plus text-[10px]"></i>
+                  <span>Add Note</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDetailsModalOpen(false);
+                    openAddExpenditureModal(detailsTargetDay);
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/30 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                >
+                  <i className="fa-solid fa-plus text-[10px]"></i>
+                  <span>Add Expenditure</span>
+                </button>
+              </div>
+              <div className="text-xs font-semibold text-slate-300">
+                Daily Total:{' '}
+                <span className="text-emerald-400 font-bold">
+                  {formatINR(detailsDailyExpInfo.dailyTotal)}
+                </span>
+              </div>
+            </div>
+
+            {/* Delete Confirmation Banner if triggered */}
+            {confirmDeleteTarget && (
+              <div className="mx-5 mt-4 p-3 rounded-xl bg-rose-950/80 border border-rose-500/50 flex flex-wrap items-center justify-between gap-3 shrink-0">
+                <div className="text-xs text-rose-200">
+                  Delete {confirmDeleteTarget.type}{' '}
+                  <strong className="text-white">
+                    “{confirmDeleteTarget.title}”
+                  </strong>
+                  ?
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDeleteTarget(null)}
+                    className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={deletingItem}
+                    onClick={handleConfirmDeleteItem}
+                    className="px-3 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold cursor-pointer disabled:opacity-50"
+                  >
+                    {deletingItem ? 'Deleting...' : 'Confirm Delete'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Modal Body */}
+            <div className="p-5 overflow-y-auto space-y-5 flex-1">
+              {detailsNotes.length === 0 && detailsExpenditures.length === 0 ? (
+                <div className="py-8 text-center text-slate-400 text-sm">
+                  No notes or expenditure recorded for this date.
+                </div>
+              ) : (
+                <>
+                  {/* Notes Section */}
+                  <div>
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-amber-400 mb-2.5 flex items-center gap-1.5">
+                      <i className="fa-solid fa-note-sticky"></i>
+                      <span>Notes ({detailsNotes.length})</span>
+                    </h4>
+                    {detailsNotes.length === 0 ? (
+                      <p className="text-xs text-slate-500">
+                        No notes recorded for this date.
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {detailsNotes.map((note) => (
+                          <div
+                            key={note.noteId}
+                            className="bg-[#131c2e] border border-slate-800 rounded-xl p-3 flex items-start justify-between gap-3"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <p className="text-xs sm:text-sm font-semibold text-slate-100">
+                                {note.title}
+                              </p>
+                              {note.description && (
+                                <p className="text-xs text-slate-300 mt-1 whitespace-pre-wrap break-words">
+                                  {note.description}
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                title="Edit Note"
+                                onClick={() => {
+                                  setDetailsModalOpen(false);
+                                  openAddNoteModal(detailsTargetDay, note);
+                                }}
+                                className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-sky-400 text-xs cursor-pointer"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                title="Delete Note"
+                                onClick={() =>
+                                  setConfirmDeleteTarget({
+                                    type: 'note',
+                                    id: note.noteId,
+                                    title: note.title,
+                                  })
+                                }
+                                className="px-2 py-1 rounded bg-slate-800 hover:bg-rose-950 text-rose-400 text-xs cursor-pointer"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Expenditure Section */}
+                  <div>
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400 mb-2.5 flex items-center gap-1.5">
+                      <i className="fa-solid fa-indian-rupee-sign"></i>
+                      <span>Expenditure ({detailsExpenditures.length})</span>
+                    </h4>
+                    {detailsExpenditures.length === 0 ? (
+                      <p className="text-xs text-slate-500">
+                        No expenditure recorded for this date.
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {detailsExpenditures.map((exp) => (
+                          <div
+                            key={exp.expenditureId}
+                            className="bg-[#131c2e] border border-slate-800 rounded-xl p-3 flex items-center justify-between gap-3"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-xs sm:text-sm font-semibold text-slate-100">
+                                  {exp.title}
+                                </span>
+                                {exp.category && (
+                                  <span className="text-[11px] text-slate-400">
+                                    · {exp.category}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="text-xs sm:text-sm font-bold text-emerald-400">
+                                {formatINR(exp.amount)}
+                              </span>
+                              <button
+                                type="button"
+                                title="Edit Expenditure"
+                                onClick={() => {
+                                  setDetailsModalOpen(false);
+                                  openAddExpenditureModal(detailsTargetDay, exp);
+                                }}
+                                className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-sky-400 text-xs cursor-pointer"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                title="Delete Expenditure"
+                                onClick={() =>
+                                  setConfirmDeleteTarget({
+                                    type: 'expenditure',
+                                    id: exp.expenditureId,
+                                    title: exp.title,
+                                  })
+                                }
+                                className="px-2 py-1 rounded bg-slate-800 hover:bg-rose-950 text-rose-400 text-xs cursor-pointer"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+
+                        <div className="pt-2 border-t border-slate-800 flex items-center justify-between text-xs sm:text-sm font-bold">
+                          <span className="text-slate-300">Daily Total:</span>
+                          <span className="text-emerald-400">
+                            {formatINR(detailsDailyExpInfo.dailyTotal)}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="px-5 py-3 bg-[#111827] border-t border-slate-800 flex justify-end shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setDetailsModalOpen(false);
+                  setConfirmDeleteTarget(null);
+                }}
+                className="px-4 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ========================================== */}
       {/* MODAL 0: SIGN IN / SIGN UP (EMAIL & PASSWORD + GOOGLE) */}
