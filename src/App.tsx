@@ -58,6 +58,10 @@ import {
   updateCalendarNoteInFirestore,
 } from './services/calendarNotesExpenseService';
 import { compressAvatarImageFile } from './utils/dateUtils';
+import {
+  OfflineIndicator,
+  PWAInstallButton,
+} from './components/PWAInstallButton';
 
 const MONTH_NAMES = [
   'January',
@@ -1866,8 +1870,11 @@ export default function App() {
           </h1>
         </div>
 
-        {/* Top Right Action Buttons: Day/Night Toggle, Sign In, Sign Up, Profile, Log Out */}
+        {/* Top Right Action Buttons: Install App, Day/Night Toggle, Sign In, Sign Up, Profile, Log Out */}
         <div className="flex flex-wrap items-center gap-2">
+          {/* In-App PWA Install Button */}
+          <PWAInstallButton />
+
           {/* 0. Day / Night Mode Toggle next to Sign-In options */}
           <button
             type="button"
@@ -3680,6 +3687,9 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* OFFLINE CONNECTIVITY INDICATOR */}
+      <OfflineIndicator />
 
       {/* TOAST NOTIFICATION */}
       {toastMsg && (
