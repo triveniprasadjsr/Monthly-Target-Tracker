@@ -560,11 +560,16 @@ export default function App() {
             typeof d.selectedDay === 'number' ? d.selectedDay : 25,
           records: d.records && typeof d.records === 'object' ? d.records : {},
         });
-        if (Array.isArray(d.calendarNotes)) {
-          setCalendarNotes(d.calendarNotes);
-        }
-        if (Array.isArray(d.calendarExpenditures)) {
-          setCalendarExpenditures(d.calendarExpenditures);
+        if (!auth?.currentUser) {
+          if (Array.isArray(d.calendarNotes) && d.calendarNotes.length > 0) {
+            setCalendarNotes(d.calendarNotes);
+          }
+          if (
+            Array.isArray(d.calendarExpenditures) &&
+            d.calendarExpenditures.length > 0
+          ) {
+            setCalendarExpenditures(d.calendarExpenditures);
+          }
         }
       } else {
         sessionStorage.removeItem(SESSION_TOKEN_KEY);
@@ -963,17 +968,59 @@ export default function App() {
 
     try {
       if (authUser) {
+        await ensureUserProfileDoc({
+          uid: authUser.uid,
+          displayName:
+            authUser.displayName || appState.profile.mainName || 'XXX',
+          email:
+            authUser.email || appState.profile.email || 'xxx.yyy@example.com',
+          phoneNumber:
+            authUser.phoneNumber || appState.profile.phone || '+91 98765 43210',
+          photoURL: authUser.photoURL || '',
+        });
+
+        const nowIso = new Date().toISOString();
         if (editingNoteId) {
           await updateCalendarNoteInFirestore(authUser.uid, editingNoteId, {
             title: cleanTitle,
             description: cleanDesc,
           });
+          setCalendarNotes((prev) => {
+            const nextNotes = prev.map((n) =>
+              n.noteId === editingNoteId
+                ? {
+                    ...n,
+                    title: cleanTitle,
+                    description: cleanDesc,
+                    updatedAt: nowIso,
+                  }
+                : n
+            );
+            saveLocalNotes(nextNotes);
+            if (backendSession?.token) {
+              saveDashboardToBackend(appState, nextNotes, calendarExpenditures);
+            }
+            return nextNotes;
+          });
           showToast('Note updated!');
         } else {
-          await createCalendarNoteInFirestore(authUser.uid, {
+          const createdNote = await createCalendarNoteInFirestore(authUser.uid, {
             date: dateKey,
             title: cleanTitle,
             description: cleanDesc,
+          });
+          setCalendarNotes((prev) => {
+            const exists = prev.some((n) => n.noteId === createdNote.noteId);
+            const nextNotes = exists
+              ? prev.map((n) =>
+                  n.noteId === createdNote.noteId ? createdNote : n
+                )
+              : [...prev, createdNote];
+            saveLocalNotes(nextNotes);
+            if (backendSession?.token) {
+              saveDashboardToBackend(appState, nextNotes, calendarExpenditures);
+            }
+            return nextNotes;
           });
           showToast('Note saved!');
         }
@@ -1062,19 +1109,69 @@ export default function App() {
 
     try {
       if (authUser) {
+        await ensureUserProfileDoc({
+          uid: authUser.uid,
+          displayName:
+            authUser.displayName || appState.profile.mainName || 'XXX',
+          email:
+            authUser.email || appState.profile.email || 'xxx.yyy@example.com',
+          phoneNumber:
+            authUser.phoneNumber || appState.profile.phone || '+91 98765 43210',
+          photoURL: authUser.photoURL || '',
+        });
+
+        const nowIso = new Date().toISOString();
         if (editingExpId) {
           await updateCalendarExpenditureInFirestore(authUser.uid, editingExpId, {
             title: cleanTitle,
             amount: roundedAmount,
             category: cleanCategory,
           });
+          setCalendarExpenditures((prev) => {
+            const nextExp = prev.map((item) =>
+              item.expenditureId === editingExpId
+                ? {
+                    ...item,
+                    title: cleanTitle,
+                    amount: roundedAmount,
+                    category: cleanCategory,
+                    updatedAt: nowIso,
+                  }
+                : item
+            );
+            saveLocalExpenditures(nextExp);
+            if (backendSession?.token) {
+              saveDashboardToBackend(appState, calendarNotes, nextExp);
+            }
+            return nextExp;
+          });
           showToast('Expenditure updated!');
         } else {
-          await createCalendarExpenditureInFirestore(authUser.uid, {
-            date: dateKey,
-            title: cleanTitle,
-            amount: roundedAmount,
-            category: cleanCategory,
+          const createdExp = await createCalendarExpenditureInFirestore(
+            authUser.uid,
+            {
+              date: dateKey,
+              title: cleanTitle,
+              amount: roundedAmount,
+              category: cleanCategory,
+            }
+          );
+          setCalendarExpenditures((prev) => {
+            const exists = prev.some(
+              (item) => item.expenditureId === createdExp.expenditureId
+            );
+            const nextExp = exists
+              ? prev.map((item) =>
+                  item.expenditureId === createdExp.expenditureId
+                    ? createdExp
+                    : item
+                )
+              : [...prev, createdExp];
+            saveLocalExpenditures(nextExp);
+            if (backendSession?.token) {
+              saveDashboardToBackend(appState, calendarNotes, nextExp);
+            }
+            return nextExp;
           });
           showToast(`Expenditure of ${formatINR(roundedAmount)} saved!`);
         }
@@ -1138,6 +1235,20 @@ export default function App() {
             authUser.uid,
             confirmDeleteTarget.id
           );
+          setCalendarNotes((prev) => {
+            const nextNotes = prev.filter(
+              (n) => n.noteId !== confirmDeleteTarget.id
+            );
+            saveLocalNotes(nextNotes);
+            if (backendSession?.token) {
+              saveDashboardToBackend(
+                appState,
+                nextNotes,
+                calendarExpenditures
+              );
+            }
+            return nextNotes;
+          });
         } else {
           const nextNotes = calendarNotes.filter(
             (n) => n.noteId !== confirmDeleteTarget.id
@@ -1159,6 +1270,16 @@ export default function App() {
             authUser.uid,
             confirmDeleteTarget.id
           );
+          setCalendarExpenditures((prev) => {
+            const nextExp = prev.filter(
+              (e) => e.expenditureId !== confirmDeleteTarget.id
+            );
+            saveLocalExpenditures(nextExp);
+            if (backendSession?.token) {
+              saveDashboardToBackend(appState, calendarNotes, nextExp);
+            }
+            return nextExp;
+          });
         } else {
           const nextExp = calendarExpenditures.filter(
             (e) => e.expenditureId !== confirmDeleteTarget.id
@@ -1534,7 +1655,20 @@ export default function App() {
         // Migrate any guest notes/expenditures created before signup to Firestore
         await migrateGuestDataToFirestore(cred.user.uid);
       } else {
-        await signInWithEmailAndPassword(auth, cleanEmail, authPassword);
+        const cred = await signInWithEmailAndPassword(
+          auth,
+          cleanEmail,
+          authPassword
+        );
+        await ensureUserProfileDoc({
+          uid: cred.user.uid,
+          displayName:
+            cred.user.displayName || cleanEmail.split('@')[0] || 'XXX',
+          email: cleanEmail,
+          phoneNumber: cred.user.phoneNumber || '+91 98765 43210',
+          photoURL: cred.user.photoURL || PRESET_AVATARS[0],
+        });
+        await migrateGuestDataToFirestore(cred.user.uid);
       }
 
       // 2. Optional safe sync with backend API if running in full-stack mode (never throws on 404/HTML)
@@ -2210,9 +2344,15 @@ export default function App() {
                             }}
                             onTouchStart={(e) => e.stopPropagation()}
                             onTouchEnd={(e) => e.stopPropagation()}
-                            className="h-5 min-w-[20px] px-1 rounded-md bg-amber-500/20 hover:bg-amber-500/35 border border-amber-400/45 text-amber-300 text-[10px] font-semibold flex items-center justify-center gap-0.5 transition cursor-pointer shadow-sm"
+                            className="h-5 min-w-[20px] px-1 rounded-md bg-amber-500/25 hover:bg-amber-500/40 border border-amber-400/60 text-amber-300 text-[10px] font-semibold flex items-center justify-center gap-0.5 transition cursor-pointer shadow-sm"
                           >
-                            <i className="fa-solid fa-note-sticky text-[9px]"></i>
+                            <svg
+                              className="w-2.5 h-2.5 shrink-0 fill-current"
+                              viewBox="0 0 16 16"
+                              aria-hidden="true"
+                            >
+                              <path d="M2.5 1A1.5 1.5 0 0 0 1 2.5v11A1.5 1.5 0 0 0 2.5 15h6.086a1.5 1.5 0 0 0 1.06-.44l4.915-4.914A1.5 1.5 0 0 0 15 8.586V2.5A1.5 1.5 0 0 0 13.5 1h-11zM2 2.5a.5.5 0 0 1 .5-.5h11a.5.5 0 0 1 .5.5V8H9.5A1.5 1.5 0 0 0 8 9.5V14H2.5a.5.5 0 0 1-.5-.5v-11zm7 11.293V9.5a.5.5 0 0 1 .5-.5h4.293L9 13.793z" />
+                            </svg>
                             {dayNotes.length > 1 && (
                               <span className="leading-none text-[9px] tabular-nums">
                                 {dayNotes.length}
@@ -2233,9 +2373,15 @@ export default function App() {
                             }}
                             onTouchStart={(e) => e.stopPropagation()}
                             onTouchEnd={(e) => e.stopPropagation()}
-                            className="h-5 min-w-[20px] px-1 rounded-md bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-400/45 text-emerald-300 text-[10px] font-semibold flex items-center justify-center gap-0.5 transition cursor-pointer shadow-sm"
+                            className="h-5 min-w-[20px] px-1 rounded-md bg-emerald-500/25 hover:bg-emerald-500/40 border border-emerald-400/60 text-emerald-300 text-[10px] font-semibold flex items-center justify-center gap-0.5 transition cursor-pointer shadow-sm"
                           >
-                            <i className="fa-solid fa-wallet text-[9px]"></i>
+                            <svg
+                              className="w-2.5 h-2.5 shrink-0 fill-current"
+                              viewBox="0 0 16 16"
+                              aria-hidden="true"
+                            >
+                              <path d="M1.5 2A1.5 1.5 0 0 0 0 3.5v9A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5v-9A1.5 1.5 0 0 0 14.5 2h-13zm13 1a.5.5 0 0 1 .5.5v2h-3.5a2.5 2.5 0 0 0 0 5H15v2a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-9a.5.5 0 0 1 .5-.5h13zM11.5 6.5H15v3h-3.5a1.5 1.5 0 0 1 0-3zm0 2a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1z" />
+                            </svg>
                             {dayExpInfo.count > 1 && (
                               <span className="leading-none text-[9px] tabular-nums">
                                 {dayExpInfo.count}

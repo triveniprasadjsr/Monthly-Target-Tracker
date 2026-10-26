@@ -3,9 +3,11 @@ import {
   deleteDoc,
   doc,
   onSnapshot,
+  query,
   serverTimestamp,
   setDoc,
   updateDoc,
+  where,
 } from 'firebase/firestore';
 import {
   db,
@@ -259,15 +261,19 @@ function timestampToIso(val: unknown): string {
 
 /**
  * Subscribes to the authenticated user's calendar notes in users/{uid}/notes
+ * Uses where('uid', '==', uid) to satisfy Firestore security rules for list queries.
  */
 export function subscribeToUserNotes(
   uid: string,
   onData: (notes: CalendarNoteItem[]) => void
 ): () => void {
   const path = `users/${uid}/notes`;
-  const notesCol = collection(db, 'users', uid, 'notes');
+  const notesQuery = query(
+    collection(db, 'users', uid, 'notes'),
+    where('uid', '==', uid)
+  );
   return onSnapshot(
-    notesCol,
+    notesQuery,
     (snap) => {
       const items: CalendarNoteItem[] = snap.docs.map((d) => {
         const data = d.data();
@@ -284,22 +290,30 @@ export function subscribeToUserNotes(
       onData(items);
     },
     (err) => {
-      handleFirestoreError(err, OperationType.LIST, path);
+      try {
+        handleFirestoreError(err, OperationType.LIST, path);
+      } catch {
+        // Prevent uncaught snapshot error from breaking UI state
+      }
     }
   );
 }
 
 /**
  * Subscribes to the authenticated user's calendar expenditures in users/{uid}/expenditures
+ * Uses where('uid', '==', uid) to satisfy Firestore security rules for list queries.
  */
 export function subscribeToUserExpenditures(
   uid: string,
   onData: (expenditures: CalendarExpenditureItem[]) => void
 ): () => void {
   const path = `users/${uid}/expenditures`;
-  const expCol = collection(db, 'users', uid, 'expenditures');
+  const expQuery = query(
+    collection(db, 'users', uid, 'expenditures'),
+    where('uid', '==', uid)
+  );
   return onSnapshot(
-    expCol,
+    expQuery,
     (snap) => {
       const items: CalendarExpenditureItem[] = snap.docs.map((d) => {
         const data = d.data();
@@ -318,7 +332,11 @@ export function subscribeToUserExpenditures(
       onData(items);
     },
     (err) => {
-      handleFirestoreError(err, OperationType.LIST, path);
+      try {
+        handleFirestoreError(err, OperationType.LIST, path);
+      } catch {
+        // Prevent uncaught snapshot error from breaking UI state
+      }
     }
   );
 }
