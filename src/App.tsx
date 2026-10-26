@@ -149,6 +149,7 @@ const DEFAULT_STATE: TrackerAppState = {
 const SESSION_TOKEN_KEY = 'monthly_tracker_session_token';
 const LOCAL_NOTES_KEY = 'monthly_tracker_notes_v1';
 const LOCAL_EXPENDITURES_KEY = 'monthly_tracker_expenditures_v1';
+const THEME_STORAGE_KEY = 'monthly_tracker_theme_v1';
 
 function normalizeStatus(status: unknown): DayStatus {
   if (status === 'met' || status === 'completed') return 'completed';
@@ -293,6 +294,25 @@ export default function App() {
   // UI toggles & modal states
   const [sidebarHidden, setSidebarHidden] = useState(false);
   const [monthPickerOpen, setMonthPickerOpen] = useState(false);
+  const [themeMode, setThemeMode] = useState<'night' | 'day'>(() => {
+    try {
+      return localStorage.getItem(THEME_STORAGE_KEY) === 'day' ? 'day' : 'night';
+    } catch {
+      return 'night';
+    }
+  });
+
+  const toggleThemeMode = useCallback(() => {
+    setThemeMode((prev) => {
+      const next = prev === 'night' ? 'day' : 'night';
+      try {
+        localStorage.setItem(THEME_STORAGE_KEY, next);
+      } catch {
+        // Ignore storage errors
+      }
+      return next;
+    });
+  }, []);
 
   // Context Menu State for Calendar Date Right-Click / Long-Press / Menu Button
   const [contextMenu, setContextMenu] = useState<{
@@ -357,9 +377,13 @@ export default function App() {
   const [editPhotoUrl, setEditPhotoUrl] = useState('');
   const [editPhotoPreview, setEditPhotoPreview] = useState(PRESET_AVATARS[0]);
 
-  // Modal 2: Add Task Modal
+  // Modal 2: Add Task Modal & Rename Task Modal
   const [addTaskModalOpen, setAddTaskModalOpen] = useState(false);
   const [newTaskName, setNewTaskName] = useState('');
+  const [renameTaskModalOpen, setRenameTaskModalOpen] = useState(false);
+  const [renamingTaskIndex, setRenamingTaskIndex] = useState<number>(0);
+  const [renamingOldName, setRenamingOldName] = useState<string>('General');
+  const [renameTaskInput, setRenameTaskInput] = useState<string>('');
 
   // Toast Notification
   const [toastMsg, setToastMsg] = useState<string | null>(null);
@@ -781,13 +805,6 @@ export default function App() {
       ),
     [calendarExpenditures, appState.currentYear, appState.currentMonth]
   );
-
-  let totalCompletedAllTime = 0;
-  Object.values(appState.records).forEach((r) => {
-    if (r && normalizeStatus(r.status) === 'completed') {
-      totalCompletedAllTime++;
-    }
-  });
 
   // Click Circular Date to Cycle Status:
   // Unmarked -> Completed (Green) -> Not Completed (Red) -> Skipped (Yellow) -> Unmarked
@@ -1346,7 +1363,7 @@ export default function App() {
     }));
   };
 
-  // Task Selection, Addition & Deletion
+  // Task Selection, Addition, Renaming & Deletion
   const selectTask = (taskName: string) => {
     updateStateAndPersist((prev) => ({
       ...prev,
@@ -1373,10 +1390,78 @@ export default function App() {
     showToast(`Task "${val}" created & saved!`);
   };
 
-  const deleteTask = (taskName: string) => {
-    if (appState.tasks.length <= 1) return;
+  const openRenameTaskModal = (taskName: string, taskIndex: number) => {
+    setRenamingTaskIndex(taskIndex);
+    setRenamingOldName(taskName);
+    setRenameTaskInput(taskName);
+    setRenameTaskModalOpen(true);
+  };
+
+  const handleRenameTaskSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanNewName = renameTaskInput.trim();
+    if (!cleanNewName) return;
+
+    if (cleanNewName === renamingOldName) {
+      setRenameTaskModalOpen(false);
+      return;
+    }
+
+    const duplicateExists = appState.tasks.some(
+      (t, idx) =>
+        idx !== renamingTaskIndex &&
+        t.trim().toLowerCase() === cleanNewName.toLowerCase()
+    );
+    if (duplicateExists) {
+      showToast(`A task named "${cleanNewName}" already exists.`);
+      return;
+    }
+
     updateStateAndPersist((prev) => {
-      const nextTasks = prev.tasks.filter((t) => t !== taskName);
+      const nextTasks = prev.tasks.map((t, idx) =>
+        idx === renamingTaskIndex || t === renamingOldName ? cleanNewName : t
+      );
+      const nextActiveTask =
+        prev.activeTask === renamingOldName ? cleanNewName : prev.activeTask;
+
+      const oldPrefix = `${renamingOldName}__`;
+      const nextRecords: Record<string, DayRecordEntry> = {};
+      for (const [k, v] of Object.entries(prev.records)) {
+        if (k.startsWith(oldPrefix)) {
+          const suffix = k.slice(oldPrefix.length);
+          nextRecords[`${cleanNewName}__${suffix}`] = v;
+        } else {
+          nextRecords[k] = v;
+        }
+      }
+
+      return {
+        ...prev,
+        tasks: nextTasks,
+        activeTask: nextActiveTask,
+        records: nextRecords,
+      };
+    });
+
+    setRenameTaskModalOpen(false);
+    showToast(`Task renamed from "${renamingOldName}" to "${cleanNewName}"!`);
+  };
+
+  const deleteTask = (taskName: string, taskIndex?: number) => {
+    const isDefaultTask =
+      taskIndex === 0 ||
+      taskName.trim().toLowerCase() === 'general' ||
+      appState.tasks.length <= 1;
+    if (isDefaultTask) {
+      showToast(
+        'The default task category cannot be deleted, but you can rename it.'
+      );
+      return;
+    }
+    updateStateAndPersist((prev) => {
+      const nextTasks = prev.tasks.filter((t, idx) =>
+        taskIndex !== undefined ? idx !== taskIndex : t !== taskName
+      );
       const nextActive =
         prev.activeTask === taskName ? nextTasks[0] : prev.activeTask;
       return {
@@ -1760,8 +1845,12 @@ export default function App() {
   );
 
   return (
-    <div className="w-full min-h-screen lg:h-screen lg:max-h-screen lg:overflow-hidden flex flex-col bg-[#0b0f19] text-slate-100 selection:bg-sky-500 selection:text-white">
-      {/* TOP HEADER BAR — Clean & Minimal: Sign In, Sign Up, Profile, Log Out */}
+    <div
+      className={`w-full min-h-screen lg:h-screen lg:max-h-screen lg:overflow-hidden flex flex-col bg-[#0b0f19] text-slate-100 selection:bg-sky-500 selection:text-white transition-colors duration-150 ${
+        themeMode === 'day' ? 'theme-day' : ''
+      }`}
+    >
+      {/* TOP HEADER BAR — Clean & Minimal: Day/Night Toggle, Sign In, Sign Up, Profile, Log Out */}
       <header className="w-full shrink-0 bg-[#0f172a]/90 backdrop-blur-md border-b border-slate-800/80 px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <button
@@ -1777,8 +1866,38 @@ export default function App() {
           </h1>
         </div>
 
-        {/* Top Right Action Buttons: Sign In, Sign Up, Profile, Log Out */}
+        {/* Top Right Action Buttons: Day/Night Toggle, Sign In, Sign Up, Profile, Log Out */}
         <div className="flex flex-wrap items-center gap-2">
+          {/* 0. Day / Night Mode Toggle next to Sign-In options */}
+          <button
+            type="button"
+            data-testid="theme-mode-toggle"
+            onClick={toggleThemeMode}
+            title={
+              themeMode === 'night'
+                ? 'Switch to Day Mode'
+                : 'Switch to Night Mode'
+            }
+            aria-label={
+              themeMode === 'night'
+                ? 'Switch to Day Mode'
+                : 'Switch to Night Mode'
+            }
+            className="px-3 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/70 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+          >
+            {themeMode === 'night' ? (
+              <>
+                <i className="fa-solid fa-sun text-amber-400 text-xs"></i>
+                <span>Day</span>
+              </>
+            ) : (
+              <>
+                <i className="fa-solid fa-moon text-indigo-500 text-xs"></i>
+                <span>Night</span>
+              </>
+            )}
+          </button>
+
           {/* 1. Sign In */}
           <button
             type="button"
@@ -1872,15 +1991,10 @@ export default function App() {
                     </label>
                   </div>
 
-                  {/* Clean User Name */}
+                  {/* Clean User Name (Total Completed Days line removed) */}
                   <h2 className="text-base font-bold text-slate-100 tracking-tight leading-snug">
                     {mainName}
                   </h2>
-
-                  <p className="mt-0.5 text-xs text-emerald-400 font-medium">
-                    Total Completed: {totalCompletedAllTime}{' '}
-                    {totalCompletedAllTime === 1 ? 'Day' : 'Days'}
-                  </p>
 
                   <div className="w-full h-px bg-slate-800/80 my-2.5" />
 
@@ -2002,7 +2116,7 @@ export default function App() {
         {/* RIGHT MAIN TRACKER CONTAINER — Flex-col filling remaining height without scrolling */}
         <main className="flex-1 min-w-0 min-h-0 flex flex-col">
           <div className="flex-1 min-h-0 flex flex-col bg-[#0f172a] border border-slate-800/90 rounded-xl overflow-hidden shadow-lg">
-            {/* 1. TOP TRACKER HEADER BANNER */}
+            {/* 1. TOP TRACKER HEADER BANNER (Top-corner expense display removed) */}
             <div className="tracker-header-banner py-2 px-4 flex flex-wrap items-center justify-between gap-2 shrink-0">
               <div className="flex items-center gap-2">
                 <h2 className="text-xs sm:text-sm font-semibold text-slate-200 tracking-wider uppercase">
@@ -2010,39 +2124,29 @@ export default function App() {
                   {appState.currentYear}
                 </h2>
               </div>
-
-              {/* Compact Top-Right Monthly Expenditure Summary (Total + Days with Expenses only) */}
-              <div className="flex flex-wrap items-center gap-3 text-xs">
-                <div className="flex items-center gap-2 bg-[#131c2e] border border-slate-800 px-3 py-1 rounded-lg">
-                  <span className="text-slate-400 hidden sm:inline">
-                    {currentMonthName} {appState.currentYear} Expense:
-                  </span>
-                  <span className="font-bold text-emerald-400 tabular-nums">
-                    {formatINR(monthlyExpSummary.totalExpenditure)}
-                  </span>
-                  <span className="text-slate-600">·</span>
-                  <span className="text-slate-300 text-[11px] tabular-nums">
-                    {monthlyExpSummary.daysWithExpenses}{' '}
-                    {monthlyExpSummary.daysWithExpenses === 1 ? 'day' : 'days'}
-                  </span>
-                </div>
-              </div>
             </div>
 
             {/* 2. COMPACT TASK TABS, MONTH NAVIGATION & STATS BAR */}
             <div className="px-4 py-2 bg-[#0f172a] border-b border-slate-800/80 shrink-0 flex flex-wrap items-center justify-between gap-2.5">
-              {/* Left: Task Tabs (Default: General + "+ Add Task") */}
+              {/* Left: Task Tabs (Default/General can be renamed, cannot be deleted) */}
               <div className="flex flex-wrap items-center gap-1.5">
-                {appState.tasks.map((taskName) => {
+                {appState.tasks.map((taskName, taskIdx) => {
                   const isActive = taskName === appState.activeTask;
+                  const isDefaultCategory =
+                    taskIdx === 0 ||
+                    taskName.trim().toLowerCase() === 'general' ||
+                    appState.tasks.length <= 1;
                   return (
                     <div
-                      key={taskName}
+                      key={`${taskIdx}-${taskName}`}
                       className="relative group flex items-center"
                     >
                       <button
                         type="button"
                         onClick={() => selectTask(taskName)}
+                        onDoubleClick={() =>
+                          openRenameTaskModal(taskName, taskIdx)
+                        }
                         className={
                           isActive
                             ? 'px-3.5 py-1.5 rounded-lg bg-sky-500 text-slate-950 font-semibold text-xs sm:text-sm transition flex items-center gap-1.5 shadow-sm cursor-pointer'
@@ -2050,14 +2154,50 @@ export default function App() {
                         }
                       >
                         <span>{taskName}</span>
-                        {appState.tasks.length > 1 && (
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          data-testid={`rename-task-${taskIdx}`}
+                          title={`Rename ${taskName}`}
+                          aria-label={`Rename ${taskName}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openRenameTaskModal(taskName, taskIdx);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              openRenameTaskModal(taskName, taskIdx);
+                            }
+                          }}
+                          className={`ml-0.5 transition text-[10px] ${
+                            isActive
+                              ? 'text-slate-900/80 hover:text-slate-950'
+                              : 'text-slate-400 hover:text-sky-400'
+                          }`}
+                        >
+                          <i className="fa-solid fa-pen"></i>
+                        </span>
+                        {!isDefaultCategory && (
                           <span
+                            role="button"
+                            tabIndex={0}
+                            data-testid={`delete-task-${taskIdx}`}
                             title={`Delete ${taskName}`}
+                            aria-label={`Delete ${taskName}`}
                             onClick={(e) => {
                               e.stopPropagation();
-                              deleteTask(taskName);
+                              deleteTask(taskName, taskIdx);
                             }}
-                            className={`ml-1 opacity-0 group-hover:opacity-100 transition text-[11px] ${
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                deleteTask(taskName, taskIdx);
+                              }
+                            }}
+                            className={`ml-0.5 opacity-80 group-hover:opacity-100 transition text-[11px] ${
                               isActive
                                 ? 'text-slate-900 hover:text-rose-900'
                                 : 'text-slate-400 hover:text-rose-400'
@@ -3480,6 +3620,60 @@ export default function App() {
                   className="px-5 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold tracking-wide cursor-pointer"
                 >
                   Add Task
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================== */}
+      {/* MODAL 3: RENAME TASK CATEGORY MODAL */}
+      {/* ========================================== */}
+      {renameTaskModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0f172a] border border-slate-700/80 rounded-2xl max-w-sm w-full overflow-hidden shadow-2xl">
+            <div className="tracker-header-banner px-5 py-3.5 flex items-center justify-between">
+              <h3 className="font-bold text-slate-100 text-sm tracking-tight flex items-center gap-2">
+                <i className="fa-solid fa-pen text-sky-400"></i> Rename Task Category
+              </h3>
+              <button
+                type="button"
+                onClick={() => setRenameTaskModalOpen(false)}
+                className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition cursor-pointer"
+              >
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+            <form onSubmit={handleRenameTaskSubmit} className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                  Task Category Name
+                </label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  maxLength={28}
+                  placeholder="Enter new task name"
+                  value={renameTaskInput}
+                  onChange={(e) => setRenameTaskInput(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400"
+                />
+              </div>
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setRenameTaskModalOpen(false)}
+                  className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold tracking-wide cursor-pointer"
+                >
+                  Save Name
                 </button>
               </div>
             </form>

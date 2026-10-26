@@ -164,3 +164,149 @@
   border: 1px solid rgba(56, 189, 248, 0.24);
 }
 
+/* =========================================================
+   DAY MODE (.theme-day) OVERRIDES
+   ========================================================= */
+.theme-day {
+  background-color: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+
+.theme-day header {
+  background-color: rgba(255, 255, 255, 0.95) !important;
+  border-bottom-color: #e2e8f0 !important;
+}
+
+.theme-day .tracker-header-banner {
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%) !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+}
+
+.theme-day .sidebar-cover {
+  background: linear-gradient(135deg, #e0f2fe 0%, #e2e8f0 100%) !important;
+  border-bottom: 1px solid #cbd5e1 !important;
+}
+
+.theme-day .day-of-week-header {
+  background-color: #f8fafc !important;
+  color: #475569 !important;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.theme-day .calendar-cell {
+  background-color: #ffffff !important;
+  border-color: #e2e8f0 !important;
+}
+
+.theme-day .calendar-cell.active-day:hover {
+  background-color: #f8fafc !important;
+  border-color: #cbd5e1 !important;
+}
+
+.theme-day .calendar-cell.selected-day {
+  background-color: rgba(14, 165, 233, 0.08) !important;
+  border-color: #0284c7 !important;
+}
+
+.theme-day .calendar-cell.status-completed {
+  background: radial-gradient(circle at center, rgba(16, 185, 129, 0.14) 0%, #ffffff 100%) !important;
+  border-color: rgba(16, 185, 129, 0.35) !important;
+}
+
+.theme-day .calendar-cell.status-not_completed {
+  background: radial-gradient(circle at center, rgba(244, 63, 94, 0.14) 0%, #ffffff 100%) !important;
+  border-color: rgba(244, 63, 94, 0.35) !important;
+}
+
+.theme-day .calendar-cell.status-skipped {
+  background: radial-gradient(circle at center, rgba(245, 158, 11, 0.14) 0%, #ffffff 100%) !important;
+  border-color: rgba(245, 158, 11, 0.35) !important;
+}
+
+.theme-day .date-circle-unmarked {
+  background-color: #f1f5f9 !important;
+  border-color: #cbd5e1 !important;
+  color: #1e293b !important;
+}
+
+.theme-day .calendar-cell.selected-day .date-circle-unmarked {
+  border-color: #0284c7 !important;
+  color: #0f172a !important;
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.18) !important;
+}
+
+.theme-day .bg-\[\#0f172a\],
+.theme-day .bg-\[\#111827\] {
+  background-color: #ffffff !important;
+}
+
+.theme-day .bg-\[\#131c2e\],
+.theme-day .bg-\[\#162033\],
+.theme-day .bg-\[\#0b0f19\] {
+  background-color: #f8fafc !important;
+}
+
+.theme-day .border-slate-800,
+.theme-day .border-slate-800\/80,
+.theme-day .border-slate-800\/90,
+.theme-day .border-slate-700,
+.theme-day .border-slate-700\/60,
+.theme-day .border-slate-700\/70,
+.theme-day .border-slate-700\/80 {
+  border-color: #cbd5e1 !important;
+}
+
+.theme-day .text-slate-100,
+.theme-day .text-slate-200,
+.theme-day .text-white {
+  color: #0f172a !important;
+}
+
+.theme-day .text-slate-300 {
+  color: #334155 !important;
+}
+
+.theme-day .text-slate-400 {
+  color: #64748b !important;
+}
+
+.theme-day .bg-slate-800,
+.theme-day .bg-slate-800\/80,
+.theme-day .bg-slate-800\/70 {
+  background-color: #e2e8f0 !important;
+  color: #0f172a !important;
+}
+
+.theme-day .bg-slate-800:hover,
+.theme-day .bg-slate-800\/80:hover,
+.theme-day .hover\:bg-slate-700:hover,
+.theme-day .hover\:bg-slate-700\/80:hover,
+.theme-day .hover\:bg-slate-800:hover {
+  background-color: #cbd5e1 !important;
+}
+
+.theme-day .text-emerald-400,
+.theme-day .text-emerald-300 {
+  color: #059669 !important;
+}
+
+.theme-day .text-amber-400,
+.theme-day .text-amber-300 {
+  color: #d97706 !important;
+}
+
+.theme-day .text-rose-400,
+.theme-day .text-rose-300 {
+  color: #e11d48 !important;
+}
+
+.theme-day .text-sky-400,
+.theme-day .text-sky-300 {
+  color: #0284c7 !important;
+}
+
+.theme-day .text-indigo-200,
+.theme-day .text-indigo-400 {
+  color: #4f46e5 !important;
+}
+
