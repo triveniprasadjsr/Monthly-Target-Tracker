@@ -6,9 +6,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createUserWithEmailAndPassword,
+  getRedirectResult,
   onAuthStateChanged,
+  sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
   updateProfile,
   type User as FirebaseUser,
@@ -220,7 +223,29 @@ function formatFirebaseAuthError(err: unknown): string {
     return 'Password must be at least 6 characters long.';
   }
   if (raw.includes('auth/too-many-requests')) {
-    return 'Too many failed attempts. Please wait a moment and try again.';
+    return 'Too many requests. Please wait a few minutes and try again.';
+  }
+  if (raw.includes('auth/unauthorized-domain')) {
+    const currentHost =
+      typeof window !== 'undefined' && window.location?.hostname
+        ? window.location.hostname
+        : 'your deployment domain';
+    return `Domain "${currentHost}" is not authorized in Firebase Authentication. Add "${currentHost}" in Firebase Console (project: gen-lang-client-0267092221) → Authentication → Settings → Authorized domains.`;
+  }
+  if (raw.includes('auth/popup-blocked')) {
+    return 'Sign-in popup was blocked by your browser. Please allow popups for this site and try again.';
+  }
+  if (
+    raw.includes('auth/popup-closed-by-user') ||
+    raw.includes('auth/cancelled-popup-request')
+  ) {
+    return 'Google sign-in was cancelled before completion. Click "Continue with Google" to try again.';
+  }
+  if (raw.includes('auth/account-exists-with-different-credential')) {
+    return 'An account already exists with this email using a different sign-in method. Please sign in with your email and password.';
+  }
+  if (raw.includes('auth/network-request-failed')) {
+    return 'Network error while reaching the authentication service. Please check your internet connection and try again.';
   }
   if (raw.includes('Unexpected token')) {
     return 'Unable to reach authentication service. Please try again.';
@@ -300,6 +325,9 @@ export default function App() {
   // Modal: View Date Details (Notes & Expenditures for Selected Date)
   const [detailsModalOpen, setDetailsModalOpen] = useState(false);
   const [detailsTargetDay, setDetailsTargetDay] = useState<number>(25);
+  const [detailsViewMode, setDetailsViewMode] = useState<
+    'all' | 'notes' | 'expenditure'
+  >('all');
   const [confirmDeleteTarget, setConfirmDeleteTarget] = useState<{
     type: 'note' | 'expenditure';
     id: string;
@@ -307,9 +335,9 @@ export default function App() {
   } | null>(null);
   const [deletingItem, setDeletingItem] = useState(false);
 
-  // Modal 0: Sign In / Sign Up Modal
+  // Modal 0: Sign In / Sign Up / Forgot Password Modal
   const [authModalOpen, setAuthModalOpen] = useState(false);
-  const [authTab, setAuthTab] = useState<'signin' | 'signup'>('signin');
+  const [authTab, setAuthTab] = useState<'signin' | 'signup' | 'forgot'>('signin');
   const [authMainName, setAuthMainName] = useState('XXX');
   const [authSurname] = useState('YYY');
   const [authPhone, setAuthPhone] = useState('+91 98765 43210');
@@ -317,6 +345,8 @@ export default function App() {
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [resetEmailInput, setResetEmailInput] = useState('');
+  const [resetSuccessMsg, setResetSuccessMsg] = useState<string | null>(null);
 
   // Modal 1: Edit Profile Modal
   const [profileModalOpen, setProfileModalOpen] = useState(false);
@@ -545,6 +575,42 @@ export default function App() {
   // Subscribe to Firebase Auth & Cloud Firestore Dashboard + Notes + Expenditures
   useEffect(() => {
     testFirestoreConnection();
+
+    // Handle redirect result if Google Sign-In fell back to signInWithRedirect on mobile/popup-blocked browsers
+    if (auth) {
+      getRedirectResult(auth)
+        .then(async (result) => {
+          if (result && result.user) {
+            await ensureUserProfileDoc({
+              uid: result.user.uid,
+              displayName:
+                result.user.displayName ||
+                result.user.email?.split('@')[0] ||
+                'User',
+              email: result.user.email || '',
+              phoneNumber: result.user.phoneNumber || '',
+              photoURL: result.user.photoURL || '',
+            });
+            setBackendSession(null);
+            sessionStorage.removeItem(SESSION_TOKEN_KEY);
+            setAuthModalOpen(false);
+            showToast(
+              `Signed in with Google as ${
+                result.user.displayName || result.user.email
+              }`
+            );
+          }
+        })
+        .catch((err) => {
+          const raw = err instanceof Error ? err.message : String(err);
+          if (
+            !raw.includes('auth/popup-closed-by-user') &&
+            !raw.includes('auth/cancelled-popup-request')
+          ) {
+            setAuthError(formatFirebaseAuthError(err));
+          }
+        });
+    }
 
     let unsubDashboard: (() => void) | null = null;
     let unsubNotes: (() => void) | null = null;
@@ -863,9 +929,13 @@ export default function App() {
     setExpModalOpen(true);
   };
 
-  const openViewDetailsModal = (dayNumber: number) => {
+  const openViewDetailsModal = (
+    dayNumber: number,
+    mode: 'all' | 'notes' | 'expenditure' = 'all'
+  ) => {
     setContextMenu(null);
     setDetailsTargetDay(dayNumber);
+    setDetailsViewMode(mode);
     setConfirmDeleteTarget(null);
     setDetailsModalOpen(true);
   };
@@ -1274,9 +1344,36 @@ export default function App() {
     showToast(`Copied ${type === 'email' ? 'Email' : 'Phone Number'}!`);
   };
 
-  // Authentication Handlers (Google Sign-In + Firebase Email & Password Sign Up / Sign In)
+  // Authentication Handlers (Google Sign-In + Firebase Email & Password Sign Up / Sign In + Password Recovery)
+  const migrateGuestDataToFirestore = async (uid: string) => {
+    const guestNotes = calendarNotes.filter((n) => n.uid === 'guest');
+    for (const gn of guestNotes) {
+      await createCalendarNoteInFirestore(uid, {
+        date: gn.date,
+        title: gn.title,
+        description: gn.description,
+      }).catch(() => {});
+    }
+    const guestExps = calendarExpenditures.filter((x) => x.uid === 'guest');
+    for (const ge of guestExps) {
+      await createCalendarExpenditureInFirestore(uid, {
+        date: ge.date,
+        title: ge.title,
+        amount: ge.amount,
+        category: ge.category,
+      }).catch(() => {});
+    }
+  };
+
   const handleGoogleSignIn = async () => {
     setAuthError(null);
+    setResetSuccessMsg(null);
+    if (!auth) {
+      setAuthError(
+        'Firebase Authentication is not configured. Please check your Firebase configuration.'
+      );
+      return;
+    }
     setAuthSubmitting(true);
     try {
       const cred = await signInWithPopup(auth, googleProvider);
@@ -1288,6 +1385,7 @@ export default function App() {
         phoneNumber: cred.user.phoneNumber || '',
         photoURL: cred.user.photoURL || '',
       });
+      await migrateGuestDataToFirestore(cred.user.uid);
       setBackendSession(null);
       sessionStorage.removeItem(SESSION_TOKEN_KEY);
       setAuthModalOpen(false);
@@ -1296,7 +1394,84 @@ export default function App() {
       );
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
-      if (!raw.includes('auth/popup-closed-by-user')) {
+      // If browser blocks popups (e.g. mobile in-app browsers on Vercel), fall back to signInWithRedirect
+      if (
+        raw.includes('auth/popup-blocked') ||
+        raw.includes('auth/operation-not-supported-in-this-environment')
+      ) {
+        try {
+          await signInWithRedirect(auth, googleProvider);
+          return;
+        } catch (redirectErr) {
+          setAuthError(formatFirebaseAuthError(redirectErr));
+        }
+      } else {
+        setAuthError(formatFirebaseAuthError(err));
+      }
+    } finally {
+      setAuthSubmitting(false);
+    }
+  };
+
+  const handleForgotPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setResetSuccessMsg(null);
+
+    const cleanEmail = resetEmailInput.trim().toLowerCase();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!cleanEmail || !emailRegex.test(cleanEmail)) {
+      setAuthError('Please enter a valid registered email address.');
+      return;
+    }
+    if (!auth) {
+      setAuthError(
+        'Authentication service is not configured. Please verify your Firebase settings.'
+      );
+      return;
+    }
+
+    setAuthSubmitting(true);
+    try {
+      const continueUrl =
+        typeof window !== 'undefined' && window.location?.origin
+          ? window.location.origin
+          : undefined;
+      try {
+        if (continueUrl) {
+          await sendPasswordResetEmail(auth, cleanEmail, {
+            url: continueUrl,
+            handleCodeInApp: false,
+          });
+        } else {
+          await sendPasswordResetEmail(auth, cleanEmail);
+        }
+      } catch (innerErr) {
+        const innerMsg =
+          innerErr instanceof Error ? innerErr.message : String(innerErr);
+        // If custom domain is not yet in Firebase Authorized Domains for continueUrl, fall back to default Firebase reset email
+        if (
+          innerMsg.includes('auth/unauthorized-continue-uri') ||
+          innerMsg.includes('auth/invalid-continue-uri') ||
+          innerMsg.includes('auth/missing-continue-uri')
+        ) {
+          await sendPasswordResetEmail(auth, cleanEmail);
+        } else {
+          throw innerErr;
+        }
+      }
+
+      setResetSuccessMsg(
+        `If an account is registered with ${cleanEmail}, a password reset link has been sent. Please check your inbox and spam folder.`
+      );
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      // Do not reveal whether a particular email address is registered
+      if (raw.includes('auth/user-not-found')) {
+        setResetSuccessMsg(
+          `If an account is registered with ${cleanEmail}, a password reset link has been sent. Please check your inbox and spam folder.`
+        );
+      } else {
         setAuthError(formatFirebaseAuthError(err));
       }
     } finally {
@@ -1307,6 +1482,7 @@ export default function App() {
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
+    setResetSuccessMsg(null);
     const cleanEmail = authEmail.trim().toLowerCase();
     if (!cleanEmail || !authPassword) {
       setAuthError('Please enter both your email address and password.');
@@ -1356,23 +1532,7 @@ export default function App() {
         await saveDashboardToFirestore(initialDashboardState, cred.user);
 
         // Migrate any guest notes/expenditures created before signup to Firestore
-        const guestNotes = calendarNotes.filter((n) => n.uid === 'guest');
-        for (const gn of guestNotes) {
-          await createCalendarNoteInFirestore(cred.user.uid, {
-            date: gn.date,
-            title: gn.title,
-            description: gn.description,
-          }).catch(() => {});
-        }
-        const guestExps = calendarExpenditures.filter((x) => x.uid === 'guest');
-        for (const ge of guestExps) {
-          await createCalendarExpenditureInFirestore(cred.user.uid, {
-            date: ge.date,
-            title: ge.title,
-            amount: ge.amount,
-            category: ge.category,
-          }).catch(() => {});
-        }
+        await migrateGuestDataToFirestore(cred.user.uid);
       } else {
         await signInWithEmailAndPassword(auth, cleanEmail, authPassword);
       }
@@ -1654,46 +1814,35 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* MONTHLY TOTAL EXPENDITURE SUMMARY CARD */}
+                  {/* MONTHLY TOTAL EXPENDITURE SUMMARY CARD (Average Daily Expenditure Removed) */}
                   <div className="w-full mt-3 bg-[#131c2e] border border-slate-800/90 rounded-xl p-3 text-left">
-                    <div className="flex items-center justify-between gap-1.5 mb-2">
+                    <div className="flex items-center justify-between gap-1.5 mb-2.5">
                       <span className="text-[11px] font-bold text-slate-200 tracking-tight truncate">
                         Monthly Expenditure — {currentMonthName}{' '}
                         {appState.currentYear}
                       </span>
                     </div>
-                    <div className="space-y-1.5 text-xs">
-                      <div className="flex items-center justify-between">
-                        <span className="text-slate-400">
-                          Total Expenditure:
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="bg-[#0f172a] border border-slate-800/80 rounded-lg px-2.5 py-2 flex flex-col justify-between">
+                        <span className="text-[10px] text-slate-400 font-medium">
+                          Total Expenditure
                         </span>
                         <span
                           data-testid="monthly-total-expenditure"
-                          className="font-bold text-emerald-400"
+                          className="text-sm font-bold text-emerald-400 tabular-nums mt-0.5 truncate"
                         >
                           {formatINR(monthlyExpSummary.totalExpenditure)}
                         </span>
                       </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-slate-400">
-                          Days with Expenses:
+                      <div className="bg-[#0f172a] border border-slate-800/80 rounded-lg px-2.5 py-2 flex flex-col justify-between">
+                        <span className="text-[10px] text-slate-400 font-medium">
+                          Days with Expenses
                         </span>
                         <span
                           data-testid="monthly-days-with-expenses"
-                          className="font-semibold text-slate-200"
+                          className="text-sm font-bold text-slate-100 tabular-nums mt-0.5"
                         >
                           {monthlyExpSummary.daysWithExpenses}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-slate-400">
-                          Average Daily Expenditure:
-                        </span>
-                        <span
-                          data-testid="monthly-average-expenditure"
-                          className="font-semibold text-sky-400"
-                        >
-                          {formatINR(monthlyExpSummary.averageDailyExpenditure)}
                         </span>
                       </div>
                     </div>
@@ -1722,29 +1871,25 @@ export default function App() {
             {/* 1. TOP TRACKER HEADER BANNER */}
             <div className="tracker-header-banner py-2 px-4 flex flex-wrap items-center justify-between gap-2 shrink-0">
               <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-sky-400"></span>
                 <h2 className="text-xs sm:text-sm font-semibold text-slate-200 tracking-wider uppercase">
                   {appState.activeTask} — {currentMonthName}{' '}
                   {appState.currentYear}
                 </h2>
               </div>
 
-              {/* Compact Top-Right Monthly Expenditure Summary & Hint */}
+              {/* Compact Top-Right Monthly Expenditure Summary (Total + Days with Expenses only) */}
               <div className="flex flex-wrap items-center gap-3 text-xs">
-                <div className="flex items-center gap-2 bg-[#131c2e] border border-slate-800 px-2.5 py-1 rounded-lg">
+                <div className="flex items-center gap-2 bg-[#131c2e] border border-slate-800 px-3 py-1 rounded-lg">
                   <span className="text-slate-400 hidden sm:inline">
                     {currentMonthName} {appState.currentYear} Expense:
                   </span>
-                  <span className="font-bold text-emerald-400">
+                  <span className="font-bold text-emerald-400 tabular-nums">
                     {formatINR(monthlyExpSummary.totalExpenditure)}
                   </span>
                   <span className="text-slate-600">·</span>
-                  <span className="text-slate-300 text-[11px]">
-                    {monthlyExpSummary.daysWithExpenses}d
-                  </span>
-                  <span className="text-slate-600">·</span>
-                  <span className="text-sky-400 text-[11px]">
-                    Avg {formatINR(monthlyExpSummary.averageDailyExpenditure)}
+                  <span className="text-slate-300 text-[11px] tabular-nums">
+                    {monthlyExpSummary.daysWithExpenses}{' '}
+                    {monthlyExpSummary.daysWithExpenses === 1 ? 'day' : 'days'}
                   </span>
                 </div>
               </div>
@@ -2045,23 +2190,60 @@ export default function App() {
                       isSelectedDay ? 'selected-day' : ''
                     }`}
                   >
-                    {/* Top-Left Corner: Saved Note Indicator */}
-                    {dayNotes.length > 0 && (
-                      <button
-                        type="button"
-                        title="Notes available — Click to view details"
-                        aria-label="Notes available"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openViewDetailsModal(dayNumber);
-                        }}
-                        className="absolute top-1 left-1 z-20 px-1.5 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/35 border border-amber-400/40 text-amber-300 text-[10px] font-semibold flex items-center gap-1 transition cursor-pointer"
+                    {/* Top-Left Corner: Separate Note Icon & Expenditure Icon side by side */}
+                    {(dayNotes.length > 0 || dayExpInfo.hasEntries) && (
+                      <div
+                        onClick={(e) => e.stopPropagation()}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onTouchEnd={(e) => e.stopPropagation()}
+                        className="absolute top-1 left-1 z-20 flex items-center gap-1"
                       >
-                        <i className="fa-solid fa-note-sticky text-[9px]"></i>
-                        {dayNotes.length > 1 && (
-                          <span className="leading-none">{dayNotes.length}</span>
+                        {dayNotes.length > 0 && (
+                          <button
+                            type="button"
+                            data-testid={`note-icon-${dayNumber}`}
+                            title="View Notes"
+                            aria-label="View Notes"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openViewDetailsModal(dayNumber, 'notes');
+                            }}
+                            onTouchStart={(e) => e.stopPropagation()}
+                            onTouchEnd={(e) => e.stopPropagation()}
+                            className="h-5 min-w-[20px] px-1 rounded-md bg-amber-500/20 hover:bg-amber-500/35 border border-amber-400/45 text-amber-300 text-[10px] font-semibold flex items-center justify-center gap-0.5 transition cursor-pointer shadow-sm"
+                          >
+                            <i className="fa-solid fa-note-sticky text-[9px]"></i>
+                            {dayNotes.length > 1 && (
+                              <span className="leading-none text-[9px] tabular-nums">
+                                {dayNotes.length}
+                              </span>
+                            )}
+                          </button>
                         )}
-                      </button>
+
+                        {dayExpInfo.hasEntries && (
+                          <button
+                            type="button"
+                            data-testid={`expenditure-icon-${dayNumber}`}
+                            title="View Expenditure"
+                            aria-label="View Expenditure"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openViewDetailsModal(dayNumber, 'expenditure');
+                            }}
+                            onTouchStart={(e) => e.stopPropagation()}
+                            onTouchEnd={(e) => e.stopPropagation()}
+                            className="h-5 min-w-[20px] px-1 rounded-md bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-400/45 text-emerald-300 text-[10px] font-semibold flex items-center justify-center gap-0.5 transition cursor-pointer shadow-sm"
+                          >
+                            <i className="fa-solid fa-wallet text-[9px]"></i>
+                            {dayExpInfo.count > 1 && (
+                              <span className="leading-none text-[9px] tabular-nums">
+                                {dayExpInfo.count}
+                              </span>
+                            )}
+                          </button>
+                        )}
+                      </div>
                     )}
 
                     {/* Top-Right Corner: Accessible Mobile / Quick Context Menu Trigger */}
@@ -2074,6 +2256,8 @@ export default function App() {
                         const rect = e.currentTarget.getBoundingClientRect();
                         openContextMenuAt(dayNumber, rect.left, rect.bottom + 4);
                       }}
+                      onTouchStart={(e) => e.stopPropagation()}
+                      onTouchEnd={(e) => e.stopPropagation()}
                       className="absolute top-1 right-1 z-20 w-5 h-5 rounded bg-slate-800/70 hover:bg-slate-700 text-slate-400 hover:text-slate-100 opacity-60 sm:opacity-0 group-hover:opacity-100 focus:opacity-100 flex items-center justify-center text-[10px] transition cursor-pointer"
                     >
                       <i className="fa-solid fa-ellipsis-vertical"></i>
@@ -2098,21 +2282,6 @@ export default function App() {
                         </span>
                       )}
                     </div>
-
-                    {/* Bottom Daily Expenditure Indicator (shown when expenditure entry recorded) */}
-                    {dayExpInfo.hasEntries && (
-                      <button
-                        type="button"
-                        title={`Daily expenditure: ${formatINR(dayExpInfo.dailyTotal)} — Click for details`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openViewDetailsModal(dayNumber);
-                        }}
-                        className="mt-0.5 z-20 px-1.5 py-0.2 rounded bg-sky-500/15 hover:bg-sky-500/30 border border-sky-400/30 text-sky-300 text-[9px] sm:text-[10px] font-semibold leading-tight truncate max-w-[92%] transition cursor-pointer"
-                      >
-                        {formatINR(dayExpInfo.dailyTotal)}
-                      </button>
-                    )}
                   </div>
                 );
               })}
@@ -2388,9 +2557,20 @@ export default function App() {
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#0f172a] border border-slate-700/80 rounded-2xl max-w-lg w-full max-h-[88vh] flex flex-col overflow-hidden shadow-2xl">
             <div className="tracker-header-banner px-5 py-3.5 flex items-center justify-between shrink-0">
-              <div>
+              <div className="flex items-center gap-2">
+                {detailsViewMode === 'notes' ? (
+                  <i className="fa-solid fa-note-sticky text-amber-400"></i>
+                ) : detailsViewMode === 'expenditure' ? (
+                  <i className="fa-solid fa-wallet text-emerald-400"></i>
+                ) : (
+                  <i className="fa-regular fa-calendar-check text-sky-400"></i>
+                )}
                 <h3 className="font-bold text-slate-100 text-sm sm:text-base tracking-tight">
-                  Date:{' '}
+                  {detailsViewMode === 'notes'
+                    ? 'Notes — '
+                    : detailsViewMode === 'expenditure'
+                      ? 'Expenditure — '
+                      : 'Date: '}
                   {formatFullDateDisplay(
                     appState.currentYear,
                     appState.currentMonth,
@@ -2410,37 +2590,73 @@ export default function App() {
               </button>
             </div>
 
-            {/* Quick Add Actions inside View Details */}
+            {/* Filter Tabs (Notes | Expenditure | All) + Quick Add Actions */}
             <div className="px-5 py-2.5 bg-[#111827] border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 shrink-0">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1 bg-[#0b0f19] p-1 rounded-lg border border-slate-800">
                 <button
                   type="button"
-                  onClick={() => {
-                    setDetailsModalOpen(false);
-                    openAddNoteModal(detailsTargetDay);
-                  }}
-                  className="px-3 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/30 text-amber-300 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                  onClick={() => setDetailsViewMode('all')}
+                  className={`px-2.5 py-1 rounded-md text-xs font-semibold transition cursor-pointer ${
+                    detailsViewMode === 'all'
+                      ? 'bg-sky-500 text-slate-950'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
                 >
-                  <i className="fa-solid fa-plus text-[10px]"></i>
-                  <span>Add Note</span>
+                  All
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    setDetailsModalOpen(false);
-                    openAddExpenditureModal(detailsTargetDay);
-                  }}
-                  className="px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/30 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                  onClick={() => setDetailsViewMode('notes')}
+                  className={`px-2.5 py-1 rounded-md text-xs font-semibold flex items-center gap-1 transition cursor-pointer ${
+                    detailsViewMode === 'notes'
+                      ? 'bg-amber-500 text-slate-950'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
                 >
-                  <i className="fa-solid fa-plus text-[10px]"></i>
-                  <span>Add Expenditure</span>
+                  <i className="fa-solid fa-note-sticky text-[10px]"></i>
+                  <span>Notes ({detailsNotes.length})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDetailsViewMode('expenditure')}
+                  className={`px-2.5 py-1 rounded-md text-xs font-semibold flex items-center gap-1 transition cursor-pointer ${
+                    detailsViewMode === 'expenditure'
+                      ? 'bg-emerald-500 text-slate-950'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <i className="fa-solid fa-wallet text-[10px]"></i>
+                  <span>Expenditure ({detailsExpenditures.length})</span>
                 </button>
               </div>
-              <div className="text-xs font-semibold text-slate-300">
-                Daily Total:{' '}
-                <span className="text-emerald-400 font-bold">
-                  {formatINR(detailsDailyExpInfo.dailyTotal)}
-                </span>
+
+              <div className="flex items-center gap-2">
+                {detailsViewMode !== 'expenditure' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDetailsModalOpen(false);
+                      openAddNoteModal(detailsTargetDay);
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/30 text-amber-300 text-xs font-semibold flex items-center gap-1 transition cursor-pointer"
+                  >
+                    <i className="fa-solid fa-plus text-[10px]"></i>
+                    <span>Add Note</span>
+                  </button>
+                )}
+                {detailsViewMode !== 'notes' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDetailsModalOpen(false);
+                      openAddExpenditureModal(detailsTargetDay);
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/30 text-emerald-300 text-xs font-semibold flex items-center gap-1 transition cursor-pointer"
+                  >
+                    <i className="fa-solid fa-plus text-[10px]"></i>
+                    <span>Add Expenditure</span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -2476,148 +2692,169 @@ export default function App() {
 
             {/* Modal Body */}
             <div className="p-5 overflow-y-auto space-y-5 flex-1">
-              {detailsNotes.length === 0 && detailsExpenditures.length === 0 ? (
+              {detailsViewMode === 'all' &&
+              detailsNotes.length === 0 &&
+              detailsExpenditures.length === 0 ? (
                 <div className="py-8 text-center text-slate-400 text-sm">
                   No notes or expenditure recorded for this date.
                 </div>
               ) : (
                 <>
                   {/* Notes Section */}
-                  <div>
-                    <h4 className="text-xs font-bold uppercase tracking-wider text-amber-400 mb-2.5 flex items-center gap-1.5">
-                      <i className="fa-solid fa-note-sticky"></i>
-                      <span>Notes ({detailsNotes.length})</span>
-                    </h4>
-                    {detailsNotes.length === 0 ? (
-                      <p className="text-xs text-slate-500">
-                        No notes recorded for this date.
-                      </p>
-                    ) : (
-                      <div className="space-y-2">
-                        {detailsNotes.map((note) => (
-                          <div
-                            key={note.noteId}
-                            className="bg-[#131c2e] border border-slate-800 rounded-xl p-3 flex items-start justify-between gap-3"
-                          >
-                            <div className="min-w-0 flex-1">
-                              <p className="text-xs sm:text-sm font-semibold text-slate-100">
-                                {note.title}
-                              </p>
-                              {note.description && (
-                                <p className="text-xs text-slate-300 mt-1 whitespace-pre-wrap break-words">
-                                  {note.description}
+                  {(detailsViewMode === 'all' || detailsViewMode === 'notes') && (
+                    <div>
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-amber-400 mb-2.5 flex items-center gap-1.5">
+                        <i className="fa-solid fa-note-sticky"></i>
+                        <span>Notes ({detailsNotes.length})</span>
+                      </h4>
+                      {detailsNotes.length === 0 ? (
+                        <p className="text-xs text-slate-500">
+                          No notes recorded for this date.
+                        </p>
+                      ) : (
+                        <div className="space-y-2">
+                          {detailsNotes.map((note) => (
+                            <div
+                              key={note.noteId}
+                              className="bg-[#131c2e] border border-slate-800 rounded-xl p-3 flex items-start justify-between gap-3"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <p className="text-xs sm:text-sm font-semibold text-slate-100">
+                                  {note.title}
                                 </p>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <button
-                                type="button"
-                                title="Edit Note"
-                                onClick={() => {
-                                  setDetailsModalOpen(false);
-                                  openAddNoteModal(detailsTargetDay, note);
-                                }}
-                                className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-sky-400 text-xs cursor-pointer"
-                              >
-                                Edit
-                              </button>
-                              <button
-                                type="button"
-                                title="Delete Note"
-                                onClick={() =>
-                                  setConfirmDeleteTarget({
-                                    type: 'note',
-                                    id: note.noteId,
-                                    title: note.title,
-                                  })
-                                }
-                                className="px-2 py-1 rounded bg-slate-800 hover:bg-rose-950 text-rose-400 text-xs cursor-pointer"
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Expenditure Section */}
-                  <div>
-                    <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400 mb-2.5 flex items-center gap-1.5">
-                      <i className="fa-solid fa-indian-rupee-sign"></i>
-                      <span>Expenditure ({detailsExpenditures.length})</span>
-                    </h4>
-                    {detailsExpenditures.length === 0 ? (
-                      <p className="text-xs text-slate-500">
-                        No expenditure recorded for this date.
-                      </p>
-                    ) : (
-                      <div className="space-y-2">
-                        {detailsExpenditures.map((exp) => (
-                          <div
-                            key={exp.expenditureId}
-                            className="bg-[#131c2e] border border-slate-800 rounded-xl p-3 flex items-center justify-between gap-3"
-                          >
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className="text-xs sm:text-sm font-semibold text-slate-100">
-                                  {exp.title}
-                                </span>
-                                {exp.category && (
-                                  <span className="text-[11px] text-slate-400">
-                                    · {exp.category}
-                                  </span>
+                                {note.description && (
+                                  <p className="text-xs text-slate-300 mt-1 whitespace-pre-wrap break-words">
+                                    {note.description}
+                                  </p>
                                 )}
                               </div>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  title="Edit Note"
+                                  onClick={() => {
+                                    setDetailsModalOpen(false);
+                                    openAddNoteModal(detailsTargetDay, note);
+                                  }}
+                                  className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-sky-400 text-xs cursor-pointer"
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  title="Delete Note"
+                                  onClick={() =>
+                                    setConfirmDeleteTarget({
+                                      type: 'note',
+                                      id: note.noteId,
+                                      title: note.title,
+                                    })
+                                  }
+                                  className="px-2 py-1 rounded bg-slate-800 hover:bg-rose-950 text-rose-400 text-xs cursor-pointer"
+                                >
+                                  Delete
+                                </button>
+                              </div>
                             </div>
-                            <div className="flex items-center gap-2 shrink-0">
-                              <span className="text-xs sm:text-sm font-bold text-emerald-400">
-                                {formatINR(exp.amount)}
-                              </span>
-                              <button
-                                type="button"
-                                title="Edit Expenditure"
-                                onClick={() => {
-                                  setDetailsModalOpen(false);
-                                  openAddExpenditureModal(detailsTargetDay, exp);
-                                }}
-                                className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-sky-400 text-xs cursor-pointer"
-                              >
-                                Edit
-                              </button>
-                              <button
-                                type="button"
-                                title="Delete Expenditure"
-                                onClick={() =>
-                                  setConfirmDeleteTarget({
-                                    type: 'expenditure',
-                                    id: exp.expenditureId,
-                                    title: exp.title,
-                                  })
-                                }
-                                className="px-2 py-1 rounded bg-slate-800 hover:bg-rose-950 text-rose-400 text-xs cursor-pointer"
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-
-                        <div className="pt-2 border-t border-slate-800 flex items-center justify-between text-xs sm:text-sm font-bold">
-                          <span className="text-slate-300">Daily Total:</span>
-                          <span className="text-emerald-400">
-                            {formatINR(detailsDailyExpInfo.dailyTotal)}
-                          </span>
+                          ))}
                         </div>
-                      </div>
-                    )}
-                  </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Expenditure Section */}
+                  {(detailsViewMode === 'all' ||
+                    detailsViewMode === 'expenditure') && (
+                    <div>
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400 mb-2.5 flex items-center gap-1.5">
+                        <i className="fa-solid fa-wallet"></i>
+                        <span>Expenditure ({detailsExpenditures.length})</span>
+                      </h4>
+                      {detailsExpenditures.length === 0 ? (
+                        <p className="text-xs text-slate-500">
+                          No expenditure recorded for this date.
+                        </p>
+                      ) : (
+                        <div className="space-y-2">
+                          {detailsExpenditures.map((exp) => (
+                            <div
+                              key={exp.expenditureId}
+                              className="bg-[#131c2e] border border-slate-800 rounded-xl p-3 flex items-center justify-between gap-3"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-xs sm:text-sm font-semibold text-slate-100">
+                                    {exp.title}
+                                  </span>
+                                  {exp.category && (
+                                    <span className="text-[11px] text-slate-400">
+                                      · {exp.category}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span className="text-xs sm:text-sm font-bold text-emerald-400 tabular-nums">
+                                  {formatINR(exp.amount)}
+                                </span>
+                                <button
+                                  type="button"
+                                  title="Edit Expenditure"
+                                  onClick={() => {
+                                    setDetailsModalOpen(false);
+                                    openAddExpenditureModal(
+                                      detailsTargetDay,
+                                      exp
+                                    );
+                                  }}
+                                  className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-sky-400 text-xs cursor-pointer"
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  title="Delete Expenditure"
+                                  onClick={() =>
+                                    setConfirmDeleteTarget({
+                                      type: 'expenditure',
+                                      id: exp.expenditureId,
+                                      title: exp.title,
+                                    })
+                                  }
+                                  className="px-2 py-1 rounded bg-slate-800 hover:bg-rose-950 text-rose-400 text-xs cursor-pointer"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+
+                          <div className="pt-2 border-t border-slate-800 flex items-center justify-between text-xs sm:text-sm font-bold">
+                            <span className="text-slate-300">
+                              Daily Expenditure Total:
+                            </span>
+                            <span
+                              data-testid="details-daily-total"
+                              className="text-emerald-400 tabular-nums"
+                            >
+                              {formatINR(detailsDailyExpInfo.dailyTotal)}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </>
               )}
             </div>
 
-            <div className="px-5 py-3 bg-[#111827] border-t border-slate-800 flex justify-end shrink-0">
+            <div className="px-5 py-3 bg-[#111827] border-t border-slate-800 flex items-center justify-between shrink-0">
+              <div className="text-xs font-semibold text-slate-300">
+                Daily Total:{' '}
+                <span className="text-emerald-400 font-bold tabular-nums">
+                  {formatINR(detailsDailyExpInfo.dailyTotal)}
+                </span>
+              </div>
               <button
                 type="button"
                 onClick={() => {
@@ -2634,7 +2871,7 @@ export default function App() {
       )}
 
       {/* ========================================== */}
-      {/* MODAL 0: SIGN IN / SIGN UP (EMAIL & PASSWORD + GOOGLE) */}
+      {/* MODAL 0: SIGN IN / SIGN UP / FORGOT PASSWORD + GOOGLE */}
       {/* ========================================== */}
       {authModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
@@ -2644,7 +2881,9 @@ export default function App() {
                 <i className="fa-solid fa-shield-halved text-sky-400"></i>{' '}
                 {authTab === 'signup'
                   ? 'Create Account'
-                  : 'Sign In to Dashboard'}
+                  : authTab === 'forgot'
+                    ? 'Reset Your Password'
+                    : 'Sign In to Dashboard'}
               </h3>
               <button
                 type="button"
@@ -2676,152 +2915,229 @@ export default function App() {
                 </div>
               )}
 
-              {/* Sign In / Sign Up Mode Switch Tabs */}
-              <div className="grid grid-cols-2 gap-1.5 p-1 bg-[#0b0f19] rounded-xl border border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAuthTab('signin');
-                    setAuthError(null);
-                  }}
-                  className={`py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
-                    authTab === 'signin'
-                      ? 'bg-sky-500 text-slate-950'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  Sign In
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAuthTab('signup');
-                    setAuthError(null);
-                  }}
-                  className={`py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
-                    authTab === 'signup'
-                      ? 'bg-sky-500 text-slate-950'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  Sign Up
-                </button>
-              </div>
+              {authTab !== 'forgot' && (
+                /* Sign In / Sign Up Mode Switch Tabs */
+                <div className="grid grid-cols-2 gap-1.5 p-1 bg-[#0b0f19] rounded-xl border border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthTab('signin');
+                      setAuthError(null);
+                      setResetSuccessMsg(null);
+                    }}
+                    className={`py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                      authTab === 'signin'
+                        ? 'bg-sky-500 text-slate-950'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Sign In
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthTab('signup');
+                      setAuthError(null);
+                      setResetSuccessMsg(null);
+                    }}
+                    className={`py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                      authTab === 'signup'
+                        ? 'bg-sky-500 text-slate-950'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Sign Up
+                  </button>
+                </div>
+              )}
 
               {authError && (
-                <div className="p-3 rounded-xl bg-rose-950/70 border border-rose-500/40 text-rose-300 text-xs font-medium">
+                <div className="p-3 rounded-xl bg-rose-950/70 border border-rose-500/40 text-rose-300 text-xs font-medium leading-relaxed">
                   {authError}
                 </div>
               )}
 
-              <form onSubmit={handleAuthSubmit} className="space-y-3">
-                {authTab === 'signup' && (
-                  <>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1">
-                        Name *
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="Your Name"
-                        value={authMainName}
-                        onChange={(e) => setAuthMainName(e.target.value)}
-                        className="w-full px-3.5 py-2 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1">
-                        Phone Number
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="+91 98765 43210"
-                        value={authPhone}
-                        onChange={(e) => setAuthPhone(e.target.value)}
-                        className="w-full px-3.5 py-2 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400"
-                      />
-                    </div>
-                  </>
-                )}
-
-                <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1">
-                    Email Address *
-                  </label>
-                  <input
-                    type="email"
-                    required
-                    placeholder="you@example.com"
-                    value={authEmail}
-                    onChange={(e) => setAuthEmail(e.target.value)}
-                    className="w-full px-3.5 py-2 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400"
-                  />
+              {resetSuccessMsg && (
+                <div className="p-3 rounded-xl bg-emerald-950/70 border border-emerald-500/40 text-emerald-300 text-xs font-medium leading-relaxed">
+                  {resetSuccessMsg}
                 </div>
+              )}
 
-                <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1">
-                    Password *
-                  </label>
-                  <input
-                    type="password"
-                    required
-                    minLength={6}
-                    placeholder="Minimum 6 characters"
-                    value={authPassword}
-                    onChange={(e) => setAuthPassword(e.target.value)}
-                    className="w-full px-3.5 py-2 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400"
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={authSubmitting}
-                  className="w-full py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold tracking-wide shadow-md transition cursor-pointer disabled:opacity-50"
+              {authTab === 'forgot' ? (
+                <form
+                  onSubmit={handleForgotPasswordSubmit}
+                  className="space-y-3.5"
                 >
-                  {authSubmitting
-                    ? 'Please wait...'
-                    : authTab === 'signup'
-                      ? 'Create Account'
-                      : 'Sign In'}
-                </button>
-              </form>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    Enter your registered email address below and we will send
+                    you a password reset link.
+                  </p>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">
+                      Registered Email Address *
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      autoFocus
+                      placeholder="you@example.com"
+                      value={resetEmailInput}
+                      onChange={(e) => setResetEmailInput(e.target.value)}
+                      className="w-full px-3.5 py-2 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400"
+                    />
+                  </div>
 
-              <div className="relative flex items-center justify-center">
-                <div className="border-t border-slate-800 w-full"></div>
-                <span className="bg-[#0f172a] px-3 text-[10px] uppercase tracking-wider font-semibold text-slate-500 whitespace-nowrap">
-                  or
-                </span>
-                <div className="border-t border-slate-800 w-full"></div>
-              </div>
+                  <button
+                    type="submit"
+                    disabled={authSubmitting}
+                    className="w-full py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold tracking-wide shadow-md transition cursor-pointer disabled:opacity-50"
+                  >
+                    {authSubmitting ? 'Sending Reset Link...' : 'Send Password Reset Email'}
+                  </button>
 
-              {/* Google Login Button */}
-              <button
-                type="button"
-                disabled={authSubmitting}
-                onClick={handleGoogleSignIn}
-                className="w-full py-2.5 px-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-semibold text-xs flex items-center justify-center gap-2.5 shadow-sm transition cursor-pointer disabled:opacity-50"
-              >
-                <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
-                  <path
-                    fill="#4285F4"
-                    d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"
-                  />
-                  <path
-                    fill="#34A853"
-                    d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24z"
-                  />
-                  <path
-                    fill="#FBBC05"
-                    d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14z"
-                  />
-                  <path
-                    fill="#EA4335"
-                    d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96z"
-                  />
-                </svg>
-                <span>Continue with Google</span>
-              </button>
+                  <div className="pt-1 text-center">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthTab('signin');
+                        setAuthError(null);
+                        setResetSuccessMsg(null);
+                      }}
+                      className="text-xs font-semibold text-sky-400 hover:text-sky-300 hover:underline transition cursor-pointer"
+                    >
+                      ← Back to Sign In
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <>
+                  <form onSubmit={handleAuthSubmit} className="space-y-3">
+                    {authTab === 'signup' && (
+                      <>
+                        <div>
+                          <label className="block text-xs font-medium text-slate-300 mb-1">
+                            Name *
+                          </label>
+                          <input
+                            type="text"
+                            required
+                            placeholder="Your Name"
+                            value={authMainName}
+                            onChange={(e) => setAuthMainName(e.target.value)}
+                            className="w-full px-3.5 py-2 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-slate-300 mb-1">
+                            Phone Number
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="+91 98765 43210"
+                            value={authPhone}
+                            onChange={(e) => setAuthPhone(e.target.value)}
+                            className="w-full px-3.5 py-2 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400"
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    <div>
+                      <label className="block text-xs font-medium text-slate-300 mb-1">
+                        Email Address *
+                      </label>
+                      <input
+                        type="email"
+                        required
+                        placeholder="you@example.com"
+                        value={authEmail}
+                        onChange={(e) => setAuthEmail(e.target.value)}
+                        className="w-full px-3.5 py-2 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-medium text-slate-300">
+                          Password *
+                        </label>
+                        {authTab === 'signin' && (
+                          <button
+                            type="button"
+                            data-testid="forgot-password-link"
+                            onClick={() => {
+                              setResetEmailInput(authEmail.trim());
+                              setAuthError(null);
+                              setResetSuccessMsg(null);
+                              setAuthTab('forgot');
+                            }}
+                            className="text-xs font-semibold text-sky-400 hover:text-sky-300 hover:underline transition cursor-pointer"
+                          >
+                            Forgot Password?
+                          </button>
+                        )}
+                      </div>
+                      <input
+                        type="password"
+                        required
+                        minLength={6}
+                        placeholder="Minimum 6 characters"
+                        value={authPassword}
+                        onChange={(e) => setAuthPassword(e.target.value)}
+                        className="w-full px-3.5 py-2 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400"
+                      />
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={authSubmitting}
+                      className="w-full py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold tracking-wide shadow-md transition cursor-pointer disabled:opacity-50"
+                    >
+                      {authSubmitting
+                        ? 'Please wait...'
+                        : authTab === 'signup'
+                          ? 'Create Account'
+                          : 'Sign In'}
+                    </button>
+                  </form>
+
+                  <div className="relative flex items-center justify-center">
+                    <div className="border-t border-slate-800 w-full"></div>
+                    <span className="bg-[#0f172a] px-3 text-[10px] uppercase tracking-wider font-semibold text-slate-500 whitespace-nowrap">
+                      or
+                    </span>
+                    <div className="border-t border-slate-800 w-full"></div>
+                  </div>
+
+                  {/* Google Login Button */}
+                  <button
+                    type="button"
+                    disabled={authSubmitting}
+                    onClick={handleGoogleSignIn}
+                    className="w-full py-2.5 px-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-semibold text-xs flex items-center justify-center gap-2.5 shadow-sm transition cursor-pointer disabled:opacity-50"
+                  >
+                    <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
+                      <path
+                        fill="#4285F4"
+                        d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"
+                      />
+                      <path
+                        fill="#34A853"
+                        d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24z"
+                      />
+                      <path
+                        fill="#FBBC05"
+                        d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14z"
+                      />
+                      <path
+                        fill="#EA4335"
+                        d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96z"
+                      />
+                    </svg>
+                    <span>Continue with Google</span>
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>

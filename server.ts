@@ -69,6 +69,10 @@ function hashPassword(password: string, salt: string): string {
 
 async function startServer() {
   const app = express();
+  app.use((_req, res, next) => {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+    next();
+  });
   app.use(express.json({ limit: '5mb' }));
 
   // POST /api/auth/signup - Email & Password registration with separate dashboard storage

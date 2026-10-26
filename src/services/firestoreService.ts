@@ -30,8 +30,11 @@ import type {
   UserSettings,
 } from '../types/tracker';
 
+const inFlightProfileRequests = new Map<string, Promise<UserProfile>>();
+
 /**
- * Ensures the authenticated user's profile document exists in users/{uid}
+ * Ensures the authenticated user's profile document exists in users/{uid}.
+ * Deduplicates concurrent calls for the same uid to prevent duplicate profile creation races.
  */
 export async function ensureUserProfileDoc(params: {
   uid: string;
@@ -40,36 +43,62 @@ export async function ensureUserProfileDoc(params: {
   phoneNumber?: string;
   photoURL?: string;
 }): Promise<UserProfile> {
-  const path = `users/${params.uid}`;
-  const userRef = doc(db, 'users', params.uid);
-  try {
-    const snap = await getDoc(userRef);
-    if (snap.exists()) {
-      return snap.data() as UserProfile;
-    }
-  } catch (err) {
-    handleFirestoreError(err, OperationType.GET, path);
+  const existingPromise = inFlightProfileRequests.get(params.uid);
+  if (existingPromise) {
+    return existingPromise;
   }
 
-  const profileData = {
-    uid: sanitizeString(params.uid, 128),
-    displayName: sanitizeString(params.displayName || 'User', 100) || 'User',
-    email: sanitizeString(params.email || 'user@example.com', 254),
-    phoneNumber: sanitizeString(params.phoneNumber || '', 30),
-    photoURL: sanitizeString(params.photoURL || '', 25000),
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  };
+  const task = (async (): Promise<UserProfile> => {
+    const path = `users/${params.uid}`;
+    const userRef = doc(db, 'users', params.uid);
+    try {
+      const snap = await getDoc(userRef);
+      if (snap.exists()) {
+        return snap.data() as UserProfile;
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, path);
+    }
 
-  try {
-    await setDoc(userRef, profileData);
-    return {
-      ...profileData,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+    const safeEmail =
+      sanitizeString(params.email || 'user@example.com', 254) ||
+      'user@example.com';
+    const profileData = {
+      uid: sanitizeString(params.uid, 128),
+      displayName: sanitizeString(params.displayName || 'User', 100) || 'User',
+      email: safeEmail.length >= 3 ? safeEmail : 'user@example.com',
+      phoneNumber: sanitizeString(params.phoneNumber || '', 30),
+      photoURL: sanitizeString(params.photoURL || '', 25000),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
     };
-  } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, path);
+
+    try {
+      await setDoc(userRef, profileData);
+      return {
+        ...profileData,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+    } catch (err) {
+      // If a concurrent request just created the doc, read and return it instead of failing
+      try {
+        const retrySnap = await getDoc(userRef);
+        if (retrySnap.exists()) {
+          return retrySnap.data() as UserProfile;
+        }
+      } catch {
+        // Ignore retry read error and report original error
+      }
+      handleFirestoreError(err, OperationType.CREATE, path);
+    }
+  })();
+
+  inFlightProfileRequests.set(params.uid, task);
+  try {
+    return await task;
+  } finally {
+    inFlightProfileRequests.delete(params.uid);
   }
 }
 

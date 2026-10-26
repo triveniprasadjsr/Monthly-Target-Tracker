@@ -1,4 +1,4 @@
-import { initializeApp, type FirebaseApp } from 'firebase/app';
+import { initializeApp, getApps, getApp, type FirebaseApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, type Auth } from 'firebase/auth';
 import {
   getFirestore,
@@ -6,7 +6,7 @@ import {
   getDocFromServer,
   type Firestore,
 } from 'firebase/firestore';
-import firebaseConfig from '../../firebase-applet-config.json';
+import rawAppletConfig from '../../firebase-applet-config.json';
 
 export enum OperationType {
   CREATE = 'create',
@@ -34,6 +34,53 @@ export interface FirestoreErrorInfo {
   };
 }
 
+const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env || {};
+
+/**
+ * Resolved Firebase Web configuration.
+ * Prioritizes VITE_FIREBASE_* environment variables (when configured in Vercel)
+ * and falls back seamlessly to firebase-applet-config.json (used in Google AI Studio and GitHub builds).
+ */
+export const firebaseConfig = {
+  apiKey: (env.VITE_FIREBASE_API_KEY || rawAppletConfig.apiKey || '').trim(),
+  authDomain: (
+    env.VITE_FIREBASE_AUTH_DOMAIN ||
+    rawAppletConfig.authDomain ||
+    ''
+  ).trim(),
+  projectId: (
+    env.VITE_FIREBASE_PROJECT_ID ||
+    rawAppletConfig.projectId ||
+    ''
+  ).trim(),
+  storageBucket: (
+    env.VITE_FIREBASE_STORAGE_BUCKET ||
+    rawAppletConfig.storageBucket ||
+    ''
+  ).trim(),
+  messagingSenderId: (
+    env.VITE_FIREBASE_MESSAGING_SENDER_ID ||
+    rawAppletConfig.messagingSenderId ||
+    ''
+  ).trim(),
+  appId: (env.VITE_FIREBASE_APP_ID || rawAppletConfig.appId || '').trim(),
+  measurementId: (
+    env.VITE_FIREBASE_MEASUREMENT_ID ||
+    rawAppletConfig.measurementId ||
+    ''
+  ).trim(),
+  firestoreDatabaseId: (
+    env.VITE_FIREBASE_FIRESTORE_DATABASE_ID ||
+    rawAppletConfig.firestoreDatabaseId ||
+    ''
+  ).trim(),
+  oAuthClientId: (
+    env.VITE_GOOGLE_OAUTH_CLIENT_ID ||
+    rawAppletConfig.oAuthClientId ||
+    ''
+  ).trim(),
+};
+
 export const isFirebaseConfigValid = Boolean(
   firebaseConfig &&
     firebaseConfig.apiKey &&
@@ -46,15 +93,23 @@ let authInstance: Auth | null = null;
 let dbInstance: Firestore | null = null;
 
 if (isFirebaseConfigValid) {
-  appInstance = initializeApp(firebaseConfig);
+  appInstance = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
   authInstance = getAuth(appInstance);
-  dbInstance = getFirestore(appInstance, firebaseConfig.firestoreDatabaseId);
+  dbInstance = firebaseConfig.firestoreDatabaseId
+    ? getFirestore(appInstance, firebaseConfig.firestoreDatabaseId)
+    : getFirestore(appInstance);
 }
 
 export const app = appInstance!;
 export const auth = authInstance!;
 export const db = dbInstance!;
+
 export const googleProvider = new GoogleAuthProvider();
+googleProvider.addScope('profile');
+googleProvider.addScope('email');
+googleProvider.setCustomParameters({
+  prompt: 'select_account',
+});
 
 export function handleFirestoreError(
   error: unknown,
@@ -91,7 +146,7 @@ export async function testFirestoreConnection(): Promise<{
     return {
       ok: false,
       error:
-        'Firebase configuration is missing or incomplete. Please check firebase-applet-config.json.',
+        'Firebase configuration is missing or incomplete. Please check your environment variables or firebase-applet-config.json.',
     };
   }
   if (connectionTested) {
