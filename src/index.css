@@ -146,6 +146,19 @@
   box-shadow: 0 4px 12px rgba(245, 158, 11, 0.28);
 }
 
+/* Disabled Non-Target Weekday Cell & Circle */
+.calendar-cell.disabled-weekday {
+  background-color: rgba(11, 15, 25, 0.65);
+  border-color: rgba(148, 163, 184, 0.05);
+  cursor: not-allowed;
+}
+.date-circle-disabled {
+  background-color: rgba(15, 23, 42, 0.55);
+  border: 1.5px dashed rgba(148, 163, 184, 0.16);
+  color: #475569;
+  opacity: 0.55;
+}
+
 /* Subtle Modern Stat Cards */
 .stat-completed {
   background-color: rgba(16, 185, 129, 0.08);
@@ -233,6 +246,18 @@
   border-color: #0284c7 !important;
   color: #0f172a !important;
   box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.18) !important;
+}
+
+.theme-day .calendar-cell.disabled-weekday {
+  background-color: #f1f5f9 !important;
+  border-color: #e2e8f0 !important;
+}
+
+.theme-day .date-circle-disabled {
+  background-color: #e2e8f0 !important;
+  border-color: #cbd5e1 !important;
+  color: #94a3b8 !important;
+  opacity: 0.65 !important;
 }
 
 .theme-day .bg-\[\#0f172a\],

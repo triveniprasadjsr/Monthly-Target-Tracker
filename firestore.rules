@@ -53,7 +53,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'docId', 'uid', 'mainName', 'surname', 'email', 'phone', 'photo',
           'tasks', 'activeTask', 'currentYear', 'currentMonth', 'selectedDay',
-          'records', 'createdAt', 'updatedAt'
+          'records', 'taskConfigs', 'createdAt', 'updatedAt'
         ])
         && data.docId is string && data.docId.size() >= 1 && data.docId.size() <= 128 && data.docId == docId
         && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == uid && data.uid == request.auth.uid
@@ -69,18 +69,44 @@ service cloud.firestore {
         && data.currentMonth is number && data.currentMonth >= 0 && data.currentMonth <= 11
         && data.selectedDay is number && data.selectedDay >= 1 && data.selectedDay <= 31
         && data.records is map && data.records.size() <= 5000
+        && (!('taskConfigs' in data) || (data.taskConfigs is map && data.taskConfigs.size() <= 50))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
 
     function isValidCalendarNote(data, uid, noteId) {
       return data.keys().hasAll(['noteId', 'uid', 'date', 'title', 'description', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['noteId', 'uid', 'date', 'title', 'description', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['noteId', 'uid', 'date', 'title', 'description', 'taskId', 'createdAt', 'updatedAt'])
         && data.noteId is string && data.noteId.size() >= 1 && data.noteId.size() <= 128 && data.noteId == noteId
         && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == uid && data.uid == request.auth.uid
         && data.date is string && data.date.size() == 10 && data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
         && data.title is string && data.title.size() >= 1 && data.title.size() <= 150
         && data.description is string && data.description.size() <= 2000
+        && (!('taskId' in data) || (data.taskId is string && data.taskId.size() <= 128))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTaskItem(data, uid, taskId) {
+      return data.keys().hasAll(['taskId', 'uid', 'name', 'targetDays', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['taskId', 'uid', 'name', 'targetDays', 'createdAt', 'updatedAt'])
+        && data.taskId is string && data.taskId.size() >= 1 && data.taskId.size() <= 128 && data.taskId == taskId
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == uid && data.uid == request.auth.uid
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && data.targetDays is list && data.targetDays.size() <= 7
+        && (data.targetDays.size() == 0 || (data.targetDays[0] is number && data.targetDays[0] >= 0 && data.targetDays[0] <= 6))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTaskProgress(data, uid, taskId, dateId) {
+      return data.keys().hasAll(['date', 'uid', 'taskId', 'status', 'note', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['date', 'uid', 'taskId', 'status', 'note', 'createdAt', 'updatedAt'])
+        && data.date is string && data.date.size() == 10 && data.date == dateId && data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == uid && data.uid == request.auth.uid
+        && data.taskId is string && data.taskId.size() >= 1 && data.taskId.size() <= 128 && data.taskId == taskId
+        && data.status is string && data.status.size() <= 20 && data.status in ['completed', 'missed', 'not_completed', 'skipped']
+        && data.note is string && data.note.size() <= 1000
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -239,7 +265,7 @@ service cloud.firestore {
             incoming().diff(existing()).affectedKeys().hasOnly([
               'mainName', 'surname', 'email', 'phone', 'photo',
               'tasks', 'activeTask', 'currentYear', 'currentMonth', 'selectedDay',
-              'records', 'updatedAt'
+              'records', 'taskConfigs', 'updatedAt'
             ])
           )
           && get(/databases/$(database)/documents/users/$(uid)).data.uid == request.auth.uid;
@@ -274,7 +300,7 @@ service cloud.firestore {
           && incoming().updatedAt == request.time
           && (
             // Action: Edit Note Title or Description
-            incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'updatedAt'])
+            incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'taskId', 'updatedAt'])
           )
           && get(/databases/$(database)/documents/users/$(uid)).data.uid == request.auth.uid;
         allow delete: if isOwner(uid)
@@ -316,6 +342,76 @@ service cloud.firestore {
           && isValidId(uid)
           && isValidId(expenditureId)
           && get(/databases/$(database)/documents/users/$(uid)).data.uid == request.auth.uid;
+      }
+
+      // 1E. Tasks Subcollection & Nested Task Progress Subcollection
+      match /tasks/{taskId} {
+        allow get: if isOwner(uid)
+          && isValidId(uid)
+          && isValidId(taskId)
+          && get(/databases/$(database)/documents/users/$(uid)).data.uid == request.auth.uid;
+        allow list: if isOwner(uid) && existing().uid == request.auth.uid;
+        allow create: if isOwner(uid)
+          && isValidId(uid)
+          && isValidId(taskId)
+          && isValidTaskItem(incoming(), uid, taskId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && get(/databases/$(database)/documents/users/$(uid)).data.uid == request.auth.uid;
+        allow update: if isOwner(uid)
+          && isValidId(uid)
+          && isValidId(taskId)
+          && isValidTaskItem(incoming(), uid, taskId)
+          && incoming().taskId == existing().taskId
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            // Action: Rename Task or Update Target Days
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'targetDays', 'updatedAt'])
+          )
+          && get(/databases/$(database)/documents/users/$(uid)).data.uid == request.auth.uid;
+        allow delete: if isOwner(uid)
+          && isValidId(uid)
+          && isValidId(taskId)
+          && get(/databases/$(database)/documents/users/$(uid)).data.uid == request.auth.uid;
+
+        match /progress/{dateId} {
+          allow get: if isOwner(uid)
+            && isValidId(uid)
+            && isValidId(taskId)
+            && isValidDateId(dateId)
+            && get(/databases/$(database)/documents/users/$(uid)/tasks/$(taskId)).data.uid == request.auth.uid;
+          allow list: if isOwner(uid) && existing().uid == request.auth.uid;
+          allow create: if isOwner(uid)
+            && isValidId(uid)
+            && isValidId(taskId)
+            && isValidDateId(dateId)
+            && isValidTaskProgress(incoming(), uid, taskId, dateId)
+            && incoming().createdAt == request.time
+            && incoming().updatedAt == request.time
+            && get(/databases/$(database)/documents/users/$(uid)/tasks/$(taskId)).data.uid == request.auth.uid;
+          allow update: if isOwner(uid)
+            && isValidId(uid)
+            && isValidId(taskId)
+            && isValidDateId(dateId)
+            && isValidTaskProgress(incoming(), uid, taskId, dateId)
+            && incoming().date == existing().date
+            && incoming().uid == existing().uid
+            && incoming().taskId == existing().taskId
+            && incoming().createdAt == existing().createdAt
+            && incoming().updatedAt == request.time
+            && (
+              // Action: Update Daily Task Progress Status or Note
+              incoming().diff(existing()).affectedKeys().hasOnly(['status', 'note', 'updatedAt'])
+            )
+            && get(/databases/$(database)/documents/users/$(uid)/tasks/$(taskId)).data.uid == request.auth.uid;
+          allow delete: if isOwner(uid)
+            && isValidId(uid)
+            && isValidId(taskId)
+            && isValidDateId(dateId)
+            && get(/databases/$(database)/documents/users/$(uid)/tasks/$(taskId)).data.uid == request.auth.uid;
+        }
       }
 
       // 2. Trackers Subcollection

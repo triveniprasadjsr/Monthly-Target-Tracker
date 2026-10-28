@@ -34,6 +34,7 @@ export interface CalendarNoteItem {
   date: string; // YYYY-MM-DD (local date)
   title: string;
   description: string;
+  taskId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -142,14 +143,24 @@ export function computeMonthCompletionPercentage(
 }
 
 /**
- * Returns all notes for a specific YYYY-MM-DD date sorted chronologically
+ * Returns all notes for a specific YYYY-MM-DD date (and optional task) sorted chronologically.
+ * Legacy notes without a taskId are shown on the default task (or when no task filter is provided).
  */
 export function getNotesForDate(
   notes: CalendarNoteItem[],
-  dateKey: string
+  dateKey: string,
+  activeTaskName?: string,
+  isDefaultTask = true
 ): CalendarNoteItem[] {
   return notes
-    .filter((n) => n.date === dateKey)
+    .filter((n) => {
+      if (n.date !== dateKey) return false;
+      if (!activeTaskName) return true;
+      if (n.taskId) {
+        return n.taskId === activeTaskName;
+      }
+      return isDefaultTask;
+    })
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
@@ -283,6 +294,9 @@ export function subscribeToUserNotes(
           date: String(data.date || ''),
           title: String(data.title || ''),
           description: String(data.description || ''),
+          ...(typeof data.taskId === 'string' && data.taskId
+            ? { taskId: data.taskId }
+            : {}),
           createdAt: timestampToIso(data.createdAt),
           updatedAt: timestampToIso(data.updatedAt),
         };
@@ -346,7 +360,7 @@ export function subscribeToUserExpenditures(
  */
 export async function createCalendarNoteInFirestore(
   uid: string,
-  input: { date: string; title: string; description: string }
+  input: { date: string; title: string; description: string; taskId?: string }
 ): Promise<CalendarNoteItem> {
   const noteId = generateSafeId('note');
   const path = `users/${uid}/notes/${noteId}`;
@@ -358,13 +372,15 @@ export async function createCalendarNoteInFirestore(
   }
   const cleanDesc = sanitizeString(input.description || '', 2000);
   const cleanDate = sanitizeString(input.date, 10);
+  const cleanTaskId = input.taskId ? sanitizeString(input.taskId, 120) : '';
 
-  const payload = {
+  const payload: Record<string, unknown> = {
     noteId,
     uid: sanitizeString(uid, 128),
     date: cleanDate,
     title: cleanTitle,
     description: cleanDesc,
+    ...(cleanTaskId ? { taskId: cleanTaskId } : {}),
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
@@ -378,6 +394,7 @@ export async function createCalendarNoteInFirestore(
       date: cleanDate,
       title: cleanTitle,
       description: cleanDesc,
+      ...(cleanTaskId ? { taskId: cleanTaskId } : {}),
       createdAt: nowIso,
       updatedAt: nowIso,
     };

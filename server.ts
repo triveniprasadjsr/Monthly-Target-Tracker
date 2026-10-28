@@ -17,6 +17,10 @@ interface StoredDashboard {
     photo: string;
   };
   tasks: string[];
+  taskConfigs?: Record<
+    string,
+    { taskId: string; name: string; targetDays: number[] }
+  >;
   activeTask: string;
   currentYear: number;
   currentMonth: number;
@@ -114,10 +118,13 @@ async function startServer() {
         mainName: String(mainName || 'XXX').trim() || 'XXX',
         surname: String(surname || 'YYY').trim() || 'YYY',
         email: cleanEmail,
-        phone: String(phone || '+91 98765 43210').trim() || '+91 98765 43210',
+        phone: String(phone || 'XXXXX').trim() || 'XXXXX',
         photo: String(photo || ''),
       },
       tasks: ['General'],
+      taskConfigs: {
+        General: { taskId: 'tsk_general', name: 'General', targetDays: [] },
+      },
       activeTask: 'General',
       currentYear: 2026,
       currentMonth: 9,
@@ -240,13 +247,17 @@ async function startServer() {
         mainName: String(incoming.profile?.mainName || 'XXX').trim().slice(0, 100) || 'XXX',
         surname: String(incoming.profile?.surname || 'YYY').trim().slice(0, 100) || 'YYY',
         email: String(incoming.profile?.email || account.email).trim().slice(0, 254),
-        phone: String(incoming.profile?.phone || '+91 98765 43210').trim().slice(0, 40),
+        phone: String(incoming.profile?.phone || 'XXXXX').trim().slice(0, 40) || 'XXXXX',
         photo: String(incoming.profile?.photo || '').slice(0, 50000),
       },
       tasks:
         Array.isArray(incoming.tasks) && incoming.tasks.length > 0
           ? incoming.tasks.map((t: unknown) => String(t).slice(0, 100)).slice(0, 50)
           : ['General'],
+      taskConfigs:
+        incoming.taskConfigs && typeof incoming.taskConfigs === 'object'
+          ? incoming.taskConfigs
+          : account.dashboard.taskConfigs || {},
       activeTask: String(incoming.activeTask || 'General').slice(0, 100),
       currentYear: Number(incoming.currentYear) || 2026,
       currentMonth:

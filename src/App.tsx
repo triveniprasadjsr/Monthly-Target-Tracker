@@ -38,7 +38,6 @@ import { ensureUserProfileDoc } from './services/firestoreService';
 import {
   type CalendarExpenditureItem,
   type CalendarNoteItem,
-  computeMonthCompletionPercentage,
   computeMonthlyExpenditureSummary,
   createCalendarExpenditureInFirestore,
   createCalendarNoteInFirestore,
@@ -57,6 +56,19 @@ import {
   updateCalendarExpenditureInFirestore,
   updateCalendarNoteInFirestore,
 } from './services/calendarNotesExpenseService';
+import {
+  computeTaskMonthStatsWithTargetDays,
+  deleteTaskAndProgressFromFirestore,
+  formatTargetDaysSummary,
+  isDateAllowedByTargetDays,
+  normalizeTargetDays,
+  saveTaskInFirestore,
+  subscribeToUserTasks,
+  syncTaskProgressInFirestore,
+  type TaskConfigMapEntry,
+  updateTaskInFirestore,
+  WEEKDAY_OPTIONS,
+} from './services/taskManagementService';
 import { compressAvatarImageFile } from './utils/dateUtils';
 import {
   OfflineIndicator,
@@ -127,6 +139,7 @@ interface ProfileData {
 interface TrackerAppState {
   profile: ProfileData;
   tasks: string[];
+  taskConfigs: Record<string, TaskConfigMapEntry>;
   activeTask: string;
   currentYear: number;
   currentMonth: number; // 0 = Jan, 9 = October
@@ -139,10 +152,17 @@ const DEFAULT_STATE: TrackerAppState = {
     mainName: 'XXX',
     surname: 'YYY',
     email: 'xxx.yyy@example.com',
-    phone: '+91 98765 43210',
+    phone: 'XXXXX',
     photo: PRESET_AVATARS[0],
   },
   tasks: ['General'],
+  taskConfigs: {
+    General: {
+      taskId: 'tsk_general',
+      name: 'General',
+      targetDays: [],
+    },
+  },
   activeTask: 'General',
   currentYear: 2026,
   currentMonth: 9, // October
@@ -364,7 +384,7 @@ export default function App() {
   const [authTab, setAuthTab] = useState<'signin' | 'signup' | 'forgot'>('signin');
   const [authMainName, setAuthMainName] = useState('XXX');
   const [authSurname] = useState('YYY');
-  const [authPhone, setAuthPhone] = useState('+91 98765 43210');
+  const [authPhone, setAuthPhone] = useState('XXXXX');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
@@ -377,17 +397,43 @@ export default function App() {
   const [editMainName, setEditMainName] = useState('XXX');
   const [editSurname, setEditSurname] = useState('YYY');
   const [editEmail, setEditEmail] = useState('xxx.yyy@example.com');
-  const [editPhone, setEditPhone] = useState('+91 98765 43210');
+  const [editPhone, setEditPhone] = useState('XXXXX');
   const [editPhotoUrl, setEditPhotoUrl] = useState('');
   const [editPhotoPreview, setEditPhotoPreview] = useState(PRESET_AVATARS[0]);
 
-  // Modal 2: Add Task Modal & Rename Task Modal
+  // Modal 2: Add Task Modal (with Task Name + 7 Selectable Target Weekdays)
   const [addTaskModalOpen, setAddTaskModalOpen] = useState(false);
   const [newTaskName, setNewTaskName] = useState('');
+  const [newTaskTargetDays, setNewTaskTargetDays] = useState<number[]>([]);
+  const [addTaskError, setAddTaskError] = useState<string | null>(null);
+  const [addTaskSubmitting, setAddTaskSubmitting] = useState(false);
+
+  // Task 3-Dot Action Menu State
+  const [taskMenuState, setTaskMenuState] = useState<{
+    taskName: string;
+    taskIndex: number;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  // Modal 3: Edit Task Modal (Rename Task & Edit Target Days)
   const [renameTaskModalOpen, setRenameTaskModalOpen] = useState(false);
   const [renamingTaskIndex, setRenamingTaskIndex] = useState<number>(0);
   const [renamingOldName, setRenamingOldName] = useState<string>('General');
   const [renameTaskInput, setRenameTaskInput] = useState<string>('');
+  const [editTaskTargetDays, setEditTaskTargetDays] = useState<number[]>([]);
+  const [editTaskFocusSection, setEditTaskFocusSection] = useState<
+    'name' | 'days'
+  >('name');
+  const [editTaskError, setEditTaskError] = useState<string | null>(null);
+  const [editTaskSubmitting, setEditTaskSubmitting] = useState(false);
+
+  // Modal 4: Delete Task Confirmation Modal
+  const [deleteTaskConfirmTarget, setDeleteTaskConfirmTarget] = useState<{
+    taskName: string;
+    taskIndex: number;
+  } | null>(null);
+  const [deletingTask, setDeletingTask] = useState(false);
 
   // Toast Notification
   const [toastMsg, setToastMsg] = useState<string | null>(null);
@@ -401,12 +447,18 @@ export default function App() {
     }, 2800);
   }, []);
 
-  // Close context menu on outside click or Escape key
+  // Close context menu or task 3-dot menu on outside click or Escape key
   useEffect(() => {
-    if (!contextMenu) return;
-    const handleGlobalClick = () => setContextMenu(null);
+    if (!contextMenu && !taskMenuState) return;
+    const handleGlobalClick = () => {
+      setContextMenu(null);
+      setTaskMenuState(null);
+    };
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setContextMenu(null);
+      if (e.key === 'Escape') {
+        setContextMenu(null);
+        setTaskMenuState(null);
+      }
     };
     window.addEventListener('click', handleGlobalClick);
     window.addEventListener('keydown', handleKeyDown);
@@ -414,7 +466,7 @@ export default function App() {
       window.removeEventListener('click', handleGlobalClick);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [contextMenu]);
+  }, [contextMenu, taskMenuState]);
 
   // Save state to Cloud Firestore under users/{uid}/dashboard/main
   const saveDashboardToFirestore = useCallback(
@@ -427,15 +479,31 @@ export default function App() {
       const path = `users/${uid}/dashboard/${docId}`;
       const docRef = doc(db, 'users', uid, 'dashboard', docId);
 
-      const cleanTasks = (
-        nextState.tasks.length > 0 ? nextState.tasks : ['General']
-      )
-        .map((t) => sanitizeString(t, 100) || 'General')
+      const cleanTasks = nextState.tasks
+        .map((t) => sanitizeString(t, 100))
+        .filter(Boolean)
         .slice(0, 50);
 
-      const cleanActiveTask = cleanTasks.includes(nextState.activeTask)
-        ? nextState.activeTask
-        : cleanTasks[0];
+      const cleanActiveTask =
+        cleanTasks.length === 0
+          ? ''
+          : cleanTasks.includes(nextState.activeTask)
+            ? nextState.activeTask
+            : cleanTasks[0];
+
+      const cleanTaskConfigs: Record<string, TaskConfigMapEntry> = {};
+      for (const tName of cleanTasks) {
+        const existingCfg = nextState.taskConfigs?.[tName];
+        cleanTaskConfigs[tName] = {
+          taskId: sanitizeString(
+            existingCfg?.taskId ||
+              `tsk_${tName.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
+            128
+          ),
+          name: tName,
+          targetDays: normalizeTargetDays(existingCfg?.targetDays),
+        };
+      }
 
       const cleanRecords: Record<string, { status: DayStatus; note: string }> =
         {};
@@ -461,15 +529,14 @@ export default function App() {
               'xxx.yyy@example.com',
             254
           ) || 'xxx.yyy@example.com',
-        phone: sanitizeString(
-          nextState.profile.phone || '+91 98765 43210',
-          40
-        ),
+        phone:
+          sanitizeString(nextState.profile.phone || 'XXXXX', 40) || 'XXXXX',
         photo: sanitizeString(
           nextState.profile.photo || PRESET_AVATARS[0],
           50000
         ),
         tasks: cleanTasks,
+        taskConfigs: cleanTaskConfigs,
         activeTask: cleanActiveTask,
         currentYear: Math.max(
           1970,
@@ -566,20 +633,35 @@ export default function App() {
           email: String(data.email || ''),
           token: savedToken,
         });
+        const loadedTasks: string[] = Array.isArray(d.tasks)
+          ? d.tasks
+          : ['General'];
+        const loadedConfigs: Record<string, TaskConfigMapEntry> = {};
+        for (const tName of loadedTasks) {
+          const rawCfg = d.taskConfigs?.[tName];
+          loadedConfigs[tName] = {
+            taskId:
+              rawCfg?.taskId ||
+              `tsk_${tName.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
+            name: tName,
+            targetDays: normalizeTargetDays(rawCfg?.targetDays),
+          };
+        }
         setAppState({
           profile: {
             mainName: d.profile?.mainName || 'XXX',
             surname: d.profile?.surname || 'YYY',
             email:
               d.profile?.email || String(data.email || 'xxx.yyy@example.com'),
-            phone: d.profile?.phone || '+91 98765 43210',
+            phone: d.profile?.phone || 'XXXXX',
             photo: d.profile?.photo || PRESET_AVATARS[0],
           },
-          tasks:
-            Array.isArray(d.tasks) && d.tasks.length > 0
-              ? d.tasks
-              : ['General'],
-          activeTask: d.activeTask || 'General',
+          tasks: loadedTasks,
+          taskConfigs: loadedConfigs,
+          activeTask:
+            typeof d.activeTask === 'string' && loadedTasks.includes(d.activeTask)
+              ? d.activeTask
+              : loadedTasks[0] || '',
           currentYear:
             typeof d.currentYear === 'number' ? d.currentYear : 2026,
           currentMonth:
@@ -605,7 +687,7 @@ export default function App() {
     });
   }, []);
 
-  // Subscribe to Firebase Auth & Cloud Firestore Dashboard + Notes + Expenditures
+  // Subscribe to Firebase Auth & Cloud Firestore Dashboard + Tasks + Notes + Expenditures
   useEffect(() => {
     testFirestoreConnection();
 
@@ -621,7 +703,7 @@ export default function App() {
                 result.user.email?.split('@')[0] ||
                 'User',
               email: result.user.email || '',
-              phoneNumber: result.user.phoneNumber || '',
+              phoneNumber: result.user.phoneNumber || 'XXXXX',
               photoURL: result.user.photoURL || '',
             });
             setBackendSession(null);
@@ -646,6 +728,7 @@ export default function App() {
     }
 
     let unsubDashboard: (() => void) | null = null;
+    let unsubTasks: (() => void) | null = null;
     let unsubNotes: (() => void) | null = null;
     let unsubExpenditures: (() => void) | null = null;
 
@@ -655,6 +738,10 @@ export default function App() {
       if (unsubDashboard) {
         unsubDashboard();
         unsubDashboard = null;
+      }
+      if (unsubTasks) {
+        unsubTasks();
+        unsubTasks = null;
       }
       if (unsubNotes) {
         unsubNotes();
@@ -673,7 +760,7 @@ export default function App() {
           displayName:
             user.displayName || user.email?.split('@')[0] || 'XXX',
           email: user.email || 'xxx.yyy@example.com',
-          phoneNumber: user.phoneNumber || '+91 98765 43210',
+          phoneNumber: user.phoneNumber || 'XXXXX',
           photoURL: user.photoURL || '',
         });
 
@@ -685,38 +772,57 @@ export default function App() {
           (snap) => {
             if (snap.exists()) {
               const data = snap.data();
-              const loadedTasks =
-                Array.isArray(data.tasks) && data.tasks.length > 0
-                  ? (data.tasks as string[])
-                  : ['General'];
+              const loadedTasks = Array.isArray(data.tasks)
+                ? (data.tasks as string[])
+                : ['General'];
               const loadedActive =
                 typeof data.activeTask === 'string' &&
                 loadedTasks.includes(data.activeTask)
                   ? data.activeTask
-                  : loadedTasks[0];
+                  : loadedTasks[0] || '';
 
-              setAppState({
-                profile: {
-                  mainName: data.mainName || 'XXX',
-                  surname: data.surname || 'YYY',
-                  email: data.email || user.email || 'xxx.yyy@example.com',
-                  phone: data.phone || '+91 98765 43210',
-                  photo: data.photo || user.photoURL || PRESET_AVATARS[0],
-                },
-                tasks: loadedTasks,
-                activeTask: loadedActive,
-                currentYear:
-                  typeof data.currentYear === 'number'
-                    ? data.currentYear
-                    : 2026,
-                currentMonth:
-                  typeof data.currentMonth === 'number' ? data.currentMonth : 9,
-                selectedDay:
-                  typeof data.selectedDay === 'number' ? data.selectedDay : 25,
-                records:
-                  data.records && typeof data.records === 'object'
-                    ? (data.records as Record<string, DayRecordEntry>)
-                    : {},
+              setAppState((prev) => {
+                const mergedConfigs: Record<string, TaskConfigMapEntry> = {
+                  ...prev.taskConfigs,
+                };
+                const rawConfigs =
+                  data.taskConfigs && typeof data.taskConfigs === 'object'
+                    ? (data.taskConfigs as Record<string, any>)
+                    : {};
+                for (const tName of loadedTasks) {
+                  const cfg = rawConfigs[tName] || mergedConfigs[tName];
+                  mergedConfigs[tName] = {
+                    taskId:
+                      cfg?.taskId ||
+                      `tsk_${tName.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
+                    name: tName,
+                    targetDays: normalizeTargetDays(cfg?.targetDays),
+                  };
+                }
+                return {
+                  profile: {
+                    mainName: data.mainName || 'XXX',
+                    surname: data.surname || 'YYY',
+                    email: data.email || user.email || 'xxx.yyy@example.com',
+                    phone: data.phone || 'XXXXX',
+                    photo: data.photo || user.photoURL || PRESET_AVATARS[0],
+                  },
+                  tasks: loadedTasks,
+                  taskConfigs: mergedConfigs,
+                  activeTask: loadedActive,
+                  currentYear:
+                    typeof data.currentYear === 'number'
+                      ? data.currentYear
+                      : 2026,
+                  currentMonth:
+                    typeof data.currentMonth === 'number' ? data.currentMonth : 9,
+                  selectedDay:
+                    typeof data.selectedDay === 'number' ? data.selectedDay : 25,
+                  records:
+                    data.records && typeof data.records === 'object'
+                      ? (data.records as Record<string, DayRecordEntry>)
+                      : {},
+                };
               });
             } else {
               const nameParts = (user.displayName || '').trim().split(/\s+/);
@@ -730,7 +836,7 @@ export default function App() {
                   mainName: initialMainName,
                   surname: initialSurname,
                   email: user.email || 'xxx.yyy@example.com',
-                  phone: user.phoneNumber || '+91 98765 43210',
+                  phone: user.phoneNumber || 'XXXXX',
                   photo: user.photoURL || PRESET_AVATARS[0],
                 },
               };
@@ -742,6 +848,35 @@ export default function App() {
             handleFirestoreError(err, OperationType.GET, dashPath);
           }
         );
+
+        // Subscribe to user's structured Tasks collection in users/{uid}/tasks
+        unsubTasks = subscribeToUserTasks(user.uid, (taskItems) => {
+          if (taskItems.length === 0) return;
+          setAppState((prev) => {
+            const nextTasks = [...prev.tasks];
+            const nextConfigs = { ...prev.taskConfigs };
+            for (const item of taskItems) {
+              if (!nextTasks.some((t) => t.toLowerCase() === item.name.toLowerCase())) {
+                nextTasks.push(item.name);
+              }
+              nextConfigs[item.name] = {
+                taskId: item.taskId,
+                name: item.name,
+                targetDays: normalizeTargetDays(item.targetDays),
+              };
+            }
+            const nextActive =
+              prev.activeTask && nextTasks.includes(prev.activeTask)
+                ? prev.activeTask
+                : nextTasks[0] || '';
+            return {
+              ...prev,
+              tasks: nextTasks,
+              taskConfigs: nextConfigs,
+              activeTask: nextActive,
+            };
+          });
+        });
 
         // Subscribe to user's private Calendar Notes & Expenditures in Firestore
         unsubNotes = subscribeToUserNotes(user.uid, (notesList) => {
@@ -764,33 +899,53 @@ export default function App() {
     return () => {
       unsubAuth();
       if (unsubDashboard) unsubDashboard();
+      if (unsubTasks) unsubTasks();
       if (unsubNotes) unsubNotes();
       if (unsubExpenditures) unsubExpenditures();
     };
-  }, [saveDashboardToFirestore]);
+  }, [saveDashboardToFirestore, showToast]);
 
-  // Compute stats for a given task/year/month:
-  // Percentage calculation is based upon ALL dates of the month.
-  // Only Green ('completed') is considered completed; Red, Yellow (Skipped), and Unmarked are unconsidered.
+  // Active task's target weekday configuration
+  const activeTaskTargetDays = useMemo(() => {
+    if (!appState.activeTask) return [];
+    return normalizeTargetDays(
+      appState.taskConfigs?.[appState.activeTask]?.targetDays
+    );
+  }, [appState.activeTask, appState.taskConfigs]);
+
+  const isDefaultTaskActive = useMemo(() => {
+    if (!appState.activeTask) return true;
+    return (
+      appState.tasks.indexOf(appState.activeTask) === 0 ||
+      appState.activeTask.trim().toLowerCase() === 'general'
+    );
+  }, [appState.activeTask, appState.tasks]);
+
+  // Compute stats for a given task/year/month respecting Target Weekdays:
+  // Disallowed weekdays are excluded from target-based statistics and completion percentage.
   const getTaskMonthStats = useCallback(
     (taskName: string, year: number, month: number) => {
-      const daysInMonth = new Date(year, month + 1, 0).getDate();
-      let completed = 0;
-      let notCompleted = 0;
-      let skipped = 0;
-
-      for (let d = 1; d <= daysInMonth; d++) {
-        const key = getRecordKey(taskName, year, month, d);
-        const status = normalizeStatus(appState.records[key]?.status);
-        if (status === 'completed') completed++;
-        else if (status === 'not_completed') notCompleted++;
-        else if (status === 'skipped') skipped++;
+      if (!taskName) {
+        const daysInMonth = new Date(year, month + 1, 0).getDate();
+        return {
+          completed: 0,
+          notCompleted: 0,
+          skipped: 0,
+          rate: 0,
+          daysInMonth,
+          eligibleDaysInMonth: 0,
+        };
       }
-
-      const rate = computeMonthCompletionPercentage(completed, year, month);
-      return { completed, notCompleted, skipped, rate, daysInMonth };
+      const taskTargetDays = appState.taskConfigs?.[taskName]?.targetDays;
+      return computeTaskMonthStatsWithTargetDays(
+        taskName,
+        year,
+        month,
+        appState.records,
+        taskTargetDays
+      );
     },
-    [appState.records]
+    [appState.records, appState.taskConfigs]
   );
 
   const activeStats = getTaskMonthStats(
@@ -812,7 +967,40 @@ export default function App() {
 
   // Click Circular Date to Cycle Status:
   // Unmarked -> Completed (Green) -> Not Completed (Red) -> Skipped (Yellow) -> Unmarked
+  // Respects the active task's Target Weekdays schedule.
   const handleDayCellClick = (dayNumber: number) => {
+    if (!appState.activeTask) {
+      showToast('Please create or select a task first.');
+      return;
+    }
+
+    const allowed = isDateAllowedByTargetDays(
+      appState.currentYear,
+      appState.currentMonth,
+      dayNumber,
+      activeTaskTargetDays
+    );
+    if (!allowed) {
+      showToast(
+        `Tracking for "${appState.activeTask}" is only enabled on ${formatTargetDaysSummary(
+          activeTaskTargetDays
+        )}.`
+      );
+      return;
+    }
+
+    let syncedStatus: DayStatus = null;
+    let syncedNote = '';
+    const activeTaskName = appState.activeTask;
+    const activeTaskId =
+      appState.taskConfigs?.[activeTaskName]?.taskId ||
+      `tsk_${activeTaskName.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`;
+    const dateKey = toDateKey(
+      appState.currentYear,
+      appState.currentMonth,
+      dayNumber
+    );
+
     updateStateAndPersist((prev) => {
       const key = getRecordKey(
         prev.activeTask,
@@ -829,6 +1017,9 @@ export default function App() {
       else if (currentStatus === 'not_completed') nextStatus = 'skipped';
       else nextStatus = null;
 
+      syncedStatus = nextStatus;
+      syncedNote = existing.note || '';
+
       const nextRecords = { ...prev.records };
       if (!nextStatus && !existing.note) {
         delete nextRecords[key];
@@ -842,11 +1033,22 @@ export default function App() {
         records: nextRecords,
       };
     });
+
+    if (authUser) {
+      syncTaskProgressInFirestore(
+        authUser.uid,
+        activeTaskId,
+        dateKey,
+        syncedStatus,
+        syncedNote
+      );
+    }
   };
 
   // Context Menu Helpers (Desktop Right-Click, Mobile Long-Press / Menu Icon, Keyboard)
   const openContextMenuAt = useCallback(
     (dayNumber: number, clientX: number, clientY: number) => {
+      setTaskMenuState(null);
       const menuWidth = 196;
       const menuHeight = 148;
       const clampedX = Math.max(
@@ -966,7 +1168,7 @@ export default function App() {
     setDetailsModalOpen(true);
   };
 
-  // Save Note (Create or Update)
+  // Save Note (Create or Update — Scoped to Active Task)
   const handleSaveNoteSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (noteSubmitting) return;
@@ -986,6 +1188,7 @@ export default function App() {
       appState.currentMonth,
       noteTargetDay
     );
+    const currentTaskScope = appState.activeTask || 'General';
 
     try {
       if (authUser) {
@@ -996,7 +1199,7 @@ export default function App() {
           email:
             authUser.email || appState.profile.email || 'xxx.yyy@example.com',
           phoneNumber:
-            authUser.phoneNumber || appState.profile.phone || '+91 98765 43210',
+            authUser.phoneNumber || appState.profile.phone || 'XXXXX',
           photoURL: authUser.photoURL || '',
         });
 
@@ -1029,6 +1232,7 @@ export default function App() {
             date: dateKey,
             title: cleanTitle,
             description: cleanDesc,
+            taskId: currentTaskScope,
           });
           setCalendarNotes((prev) => {
             const exists = prev.some((n) => n.noteId === createdNote.noteId);
@@ -1067,6 +1271,7 @@ export default function App() {
             date: dateKey,
             title: cleanTitle,
             description: cleanDesc,
+            taskId: currentTaskScope,
             createdAt: nowIso,
             updatedAt: nowIso,
           };
@@ -1137,7 +1342,7 @@ export default function App() {
           email:
             authUser.email || appState.profile.email || 'xxx.yyy@example.com',
           phoneNumber:
-            authUser.phoneNumber || appState.profile.phone || '+91 98765 43210',
+            authUser.phoneNumber || appState.profile.phone || 'XXXXX',
           photoURL: authUser.photoURL || '',
         });
 
@@ -1367,114 +1572,349 @@ export default function App() {
     }));
   };
 
-  // Task Selection, Addition, Renaming & Deletion
+  // =========================================================
+  // TASK MANAGEMENT: Select, Add, Rename / Edit Target Days, Delete
+  // =========================================================
   const selectTask = (taskName: string) => {
+    setTaskMenuState(null);
     updateStateAndPersist((prev) => ({
       ...prev,
       activeTask: taskName,
     }));
   };
 
-  const handleAddTaskSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const val = newTaskName.trim();
-    if (!val) return;
-    updateStateAndPersist((prev) => {
-      const nextTasks = prev.tasks.includes(val)
-        ? prev.tasks
-        : [...prev.tasks, val];
-      return {
-        ...prev,
-        tasks: nextTasks,
-        activeTask: val,
-      };
-    });
-    setNewTaskName('');
-    setAddTaskModalOpen(false);
-    showToast(`Task "${val}" created & saved!`);
+  const toggleNewTaskWeekday = (dayIndex: number) => {
+    setNewTaskTargetDays((prev) =>
+      prev.includes(dayIndex)
+        ? prev.filter((d) => d !== dayIndex)
+        : normalizeTargetDays([...prev, dayIndex])
+    );
   };
 
-  const openRenameTaskModal = (taskName: string, taskIndex: number) => {
+  const toggleEditTaskWeekday = (dayIndex: number) => {
+    setEditTaskTargetDays((prev) =>
+      prev.includes(dayIndex)
+        ? prev.filter((d) => d !== dayIndex)
+        : normalizeTargetDays([...prev, dayIndex])
+    );
+  };
+
+  const openAddTaskModal = () => {
+    setTaskMenuState(null);
+    setNewTaskName('');
+    setNewTaskTargetDays([]);
+    setAddTaskError(null);
+    setAddTaskModalOpen(true);
+  };
+
+  const handleAddTaskSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (addTaskSubmitting) return;
+
+    const cleanName = newTaskName.trim();
+    if (!cleanName) {
+      setAddTaskError('Task name is required.');
+      return;
+    }
+
+    const isDuplicate = appState.tasks.some(
+      (existing) => existing.trim().toLowerCase() === cleanName.toLowerCase()
+    );
+    if (isDuplicate) {
+      setAddTaskError(
+        `A task named "${cleanName}" already exists. Please choose a different name.`
+      );
+      return;
+    }
+
+    setAddTaskError(null);
+    setAddTaskSubmitting(true);
+    const cleanTargetDays = normalizeTargetDays(newTaskTargetDays);
+    const taskId = generateSafeId('tsk');
+
+    try {
+      if (authUser) {
+        await ensureUserProfileDoc({
+          uid: authUser.uid,
+          displayName:
+            authUser.displayName || appState.profile.mainName || 'XXX',
+          email:
+            authUser.email || appState.profile.email || 'xxx.yyy@example.com',
+          phoneNumber:
+            authUser.phoneNumber || appState.profile.phone || 'XXXXX',
+          photoURL: authUser.photoURL || '',
+        });
+        await saveTaskInFirestore(authUser.uid, {
+          taskId,
+          name: cleanName,
+          targetDays: cleanTargetDays,
+        });
+      }
+
+      updateStateAndPersist((prev) => {
+        const nextTasks = prev.tasks.some(
+          (t) => t.trim().toLowerCase() === cleanName.toLowerCase()
+        )
+          ? prev.tasks
+          : [...prev.tasks, cleanName];
+        const nextConfigs: Record<string, TaskConfigMapEntry> = {
+          ...prev.taskConfigs,
+          [cleanName]: {
+            taskId,
+            name: cleanName,
+            targetDays: cleanTargetDays,
+          },
+        };
+        return {
+          ...prev,
+          tasks: nextTasks,
+          taskConfigs: nextConfigs,
+          activeTask: cleanName,
+        };
+      });
+
+      setNewTaskName('');
+      setNewTaskTargetDays([]);
+      setAddTaskModalOpen(false);
+      showToast(`Task "${cleanName}" created & selected!`);
+    } catch (err) {
+      setAddTaskError(
+        err instanceof Error
+          ? err.message
+          : 'Failed to create task. Please try again.'
+      );
+    } finally {
+      setAddTaskSubmitting(false);
+    }
+  };
+
+  const openTaskMenu = (
+    e: React.MouseEvent<HTMLElement>,
+    taskName: string,
+    taskIndex: number
+  ) => {
+    e.stopPropagation();
+    setContextMenu(null);
+    const rect = e.currentTarget.getBoundingClientRect();
+    const menuWidth = 190;
+    const menuHeight = 132;
+    const clampedX = Math.max(
+      8,
+      Math.min(rect.left, window.innerWidth - menuWidth - 8)
+    );
+    const clampedY = Math.max(
+      8,
+      Math.min(rect.bottom + 6, window.innerHeight - menuHeight - 8)
+    );
+    setTaskMenuState((prev) =>
+      prev && prev.taskIndex === taskIndex && prev.taskName === taskName
+        ? null
+        : { taskName, taskIndex, x: clampedX, y: clampedY }
+    );
+  };
+
+  const openEditTaskModal = (
+    taskName: string,
+    taskIndex: number,
+    focusSection: 'name' | 'days' = 'name'
+  ) => {
+    setTaskMenuState(null);
     setRenamingTaskIndex(taskIndex);
     setRenamingOldName(taskName);
     setRenameTaskInput(taskName);
+    const currentDays = normalizeTargetDays(
+      appState.taskConfigs?.[taskName]?.targetDays
+    );
+    setEditTaskTargetDays(currentDays);
+    setEditTaskFocusSection(focusSection);
+    setEditTaskError(null);
     setRenameTaskModalOpen(true);
   };
 
-  const handleRenameTaskSubmit = (e: React.FormEvent) => {
+  const handleRenameTaskSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanNewName = renameTaskInput.trim();
-    if (!cleanNewName) return;
+    if (editTaskSubmitting) return;
 
-    if (cleanNewName === renamingOldName) {
-      setRenameTaskModalOpen(false);
+    const cleanNewName = renameTaskInput.trim();
+    if (!cleanNewName) {
+      setEditTaskError('Task name cannot be empty.');
       return;
     }
 
     const duplicateExists = appState.tasks.some(
       (t, idx) =>
         idx !== renamingTaskIndex &&
+        t.trim().toLowerCase() !== renamingOldName.trim().toLowerCase() &&
         t.trim().toLowerCase() === cleanNewName.toLowerCase()
     );
     if (duplicateExists) {
-      showToast(`A task named "${cleanNewName}" already exists.`);
+      setEditTaskError(
+        `A task named "${cleanNewName}" already exists. Please choose a different name.`
+      );
       return;
     }
 
-    updateStateAndPersist((prev) => {
-      const nextTasks = prev.tasks.map((t, idx) =>
-        idx === renamingTaskIndex || t === renamingOldName ? cleanNewName : t
-      );
-      const nextActiveTask =
-        prev.activeTask === renamingOldName ? cleanNewName : prev.activeTask;
+    setEditTaskError(null);
+    setEditTaskSubmitting(true);
+    const cleanTargetDays = normalizeTargetDays(editTaskTargetDays);
+    const existingCfg = appState.taskConfigs?.[renamingOldName];
+    const taskId =
+      existingCfg?.taskId ||
+      `tsk_${cleanNewName.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`;
 
-      const oldPrefix = `${renamingOldName}__`;
-      const nextRecords: Record<string, DayRecordEntry> = {};
-      for (const [k, v] of Object.entries(prev.records)) {
-        if (k.startsWith(oldPrefix)) {
-          const suffix = k.slice(oldPrefix.length);
-          nextRecords[`${cleanNewName}__${suffix}`] = v;
-        } else {
-          nextRecords[k] = v;
+    try {
+      if (authUser) {
+        await updateTaskInFirestore(authUser.uid, taskId, {
+          name: cleanNewName,
+          targetDays: cleanTargetDays,
+        });
+      }
+
+      updateStateAndPersist((prev) => {
+        const nextTasks = prev.tasks.map((t, idx) =>
+          idx === renamingTaskIndex || t === renamingOldName ? cleanNewName : t
+        );
+        const nextActiveTask =
+          prev.activeTask === renamingOldName ? cleanNewName : prev.activeTask;
+
+        const nextConfigs: Record<string, TaskConfigMapEntry> = {
+          ...prev.taskConfigs,
+        };
+        if (renamingOldName !== cleanNewName) {
+          delete nextConfigs[renamingOldName];
+        }
+        nextConfigs[cleanNewName] = {
+          taskId,
+          name: cleanNewName,
+          targetDays: cleanTargetDays,
+        };
+
+        const oldPrefix = `${renamingOldName}__`;
+        const nextRecords: Record<string, DayRecordEntry> = {};
+        for (const [k, v] of Object.entries(prev.records)) {
+          if (renamingOldName !== cleanNewName && k.startsWith(oldPrefix)) {
+            const suffix = k.slice(oldPrefix.length);
+            nextRecords[`${cleanNewName}__${suffix}`] = v;
+          } else {
+            nextRecords[k] = v;
+          }
+        }
+
+        return {
+          ...prev,
+          tasks: nextTasks,
+          taskConfigs: nextConfigs,
+          activeTask: nextActiveTask,
+          records: nextRecords,
+        };
+      });
+
+      // Keep task-scoped notes linked to the renamed task
+      if (renamingOldName !== cleanNewName) {
+        setCalendarNotes((prev) => {
+          const updated = prev.map((n) =>
+            n.taskId === renamingOldName ? { ...n, taskId: cleanNewName } : n
+          );
+          saveLocalNotes(updated);
+          return updated;
+        });
+      }
+
+      setRenameTaskModalOpen(false);
+      showToast(
+        renamingOldName !== cleanNewName
+          ? `Task updated to "${cleanNewName}"!`
+          : `Target days updated for "${cleanNewName}"!`
+      );
+    } catch (err) {
+      setEditTaskError(
+        err instanceof Error
+          ? err.message
+          : 'Failed to update task. Please try again.'
+      );
+    } finally {
+      setEditTaskSubmitting(false);
+    }
+  };
+
+  const requestDeleteTask = (taskName: string, taskIndex: number) => {
+    setTaskMenuState(null);
+    if (
+      taskName.trim().toLowerCase() === 'general' &&
+      appState.tasks.length <= 1
+    ) {
+      showToast(
+        'The default General task category cannot be deleted, but you can rename it.'
+      );
+      return;
+    }
+    setDeleteTaskConfirmTarget({ taskName, taskIndex });
+  };
+
+  const handleConfirmDeleteTask = async () => {
+    if (!deleteTaskConfirmTarget || deletingTask) return;
+    const { taskName, taskIndex } = deleteTaskConfirmTarget;
+    setDeletingTask(true);
+
+    const existingCfg = appState.taskConfigs?.[taskName];
+    const taskId =
+      existingCfg?.taskId ||
+      `tsk_${taskName.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`;
+
+    try {
+      const notesToDelete = calendarNotes.filter((n) => n.taskId === taskName);
+
+      if (authUser) {
+        await deleteTaskAndProgressFromFirestore(authUser.uid, taskId);
+        for (const n of notesToDelete) {
+          await deleteCalendarNoteFromFirestore(authUser.uid, n.noteId).catch(
+            () => {}
+          );
         }
       }
 
-      return {
-        ...prev,
-        tasks: nextTasks,
-        activeTask: nextActiveTask,
-        records: nextRecords,
-      };
-    });
+      const remainingNotes = calendarNotes.filter((n) => n.taskId !== taskName);
+      setCalendarNotes(remainingNotes);
+      saveLocalNotes(remainingNotes);
 
-    setRenameTaskModalOpen(false);
-    showToast(`Task renamed from "${renamingOldName}" to "${cleanNewName}"!`);
-  };
+      updateStateAndPersist((prev) => {
+        const nextTasks = prev.tasks.filter((t, idx) =>
+          taskIndex !== undefined ? idx !== taskIndex : t !== taskName
+        );
+        const nextConfigs = { ...prev.taskConfigs };
+        delete nextConfigs[taskName];
 
-  const deleteTask = (taskName: string, taskIndex?: number) => {
-    const isDefaultTask =
-      taskIndex === 0 ||
-      taskName.trim().toLowerCase() === 'general' ||
-      appState.tasks.length <= 1;
-    if (isDefaultTask) {
+        const prefix = `${taskName}__`;
+        const nextRecords: Record<string, DayRecordEntry> = {};
+        for (const [k, v] of Object.entries(prev.records)) {
+          if (!k.startsWith(prefix)) {
+            nextRecords[k] = v;
+          }
+        }
+
+        const nextActive =
+          prev.activeTask === taskName
+            ? nextTasks[0] || ''
+            : prev.activeTask;
+
+        return {
+          ...prev,
+          tasks: nextTasks,
+          taskConfigs: nextConfigs,
+          activeTask: nextActive,
+          records: nextRecords,
+        };
+      });
+
+      setDeleteTaskConfirmTarget(null);
+      showToast(`Task "${taskName}" and its history were deleted.`);
+    } catch (err) {
       showToast(
-        'The default task category cannot be deleted, but you can rename it.'
+        err instanceof Error ? err.message : 'Failed to delete task.'
       );
-      return;
+    } finally {
+      setDeletingTask(false);
     }
-    updateStateAndPersist((prev) => {
-      const nextTasks = prev.tasks.filter((t, idx) =>
-        taskIndex !== undefined ? idx !== taskIndex : t !== taskName
-      );
-      const nextActive =
-        prev.activeTask === taskName ? nextTasks[0] : prev.activeTask;
-      return {
-        ...prev,
-        tasks: nextTasks,
-        activeTask: nextActive,
-      };
-    });
-    showToast(`Task "${taskName}" removed.`);
   };
 
   // Profile Modal & Photo Upload Handlers
@@ -1483,7 +1923,7 @@ export default function App() {
     setEditMainName(p.mainName || 'XXX');
     setEditSurname(p.surname || 'YYY');
     setEditEmail(p.email || 'xxx.yyy@example.com');
-    setEditPhone(p.phone || '+91 98765 43210');
+    setEditPhone(p.phone || 'XXXXX');
     setEditPhotoUrl(p.photo.startsWith('data:') ? '' : p.photo);
     setEditPhotoPreview(p.photo || PRESET_AVATARS[0]);
     setProfileModalOpen(true);
@@ -1529,7 +1969,7 @@ export default function App() {
     const mainName = editMainName.trim() || 'XXX';
     const surname = editSurname.trim() || 'YYY';
     const email = editEmail.trim() || 'xxx.yyy@example.com';
-    const phone = editPhone.trim() || '+91 98765 43210';
+    const phone = editPhone.trim() || 'XXXXX';
     const customUrl = editPhotoUrl.trim();
     const finalPhoto = customUrl || editPhotoPreview || appState.profile.photo;
 
@@ -1562,6 +2002,7 @@ export default function App() {
         date: gn.date,
         title: gn.title,
         description: gn.description,
+        taskId: gn.taskId,
       }).catch(() => {});
     }
     const guestExps = calendarExpenditures.filter((x) => x.uid === 'guest');
@@ -1592,7 +2033,7 @@ export default function App() {
         displayName:
           cred.user.displayName || cred.user.email?.split('@')[0] || 'User',
         email: cred.user.email || '',
-        phoneNumber: cred.user.phoneNumber || '',
+        phoneNumber: cred.user.phoneNumber || 'XXXXX',
         photoURL: cred.user.photoURL || '',
       });
       await migrateGuestDataToFirestore(cred.user.uid);
@@ -1707,7 +2148,7 @@ export default function App() {
     try {
       const mName = authMainName.trim() || 'XXX';
       const sName = authSurname.trim() || 'YYY';
-      const phoneVal = authPhone.trim() || '+91 98765 43210';
+      const phoneVal = authPhone.trim() || 'XXXXX';
 
       // 1. Primary Authentication: Firebase Authentication + Cloud Firestore
       if (authTab === 'signup') {
@@ -1754,7 +2195,7 @@ export default function App() {
           displayName:
             cred.user.displayName || cleanEmail.split('@')[0] || 'XXX',
           email: cleanEmail,
-          phoneNumber: cred.user.phoneNumber || '+91 98765 43210',
+          phoneNumber: cred.user.phoneNumber || 'XXXXX',
           photoURL: cred.user.photoURL || PRESET_AVATARS[0],
         });
         await migrateGuestDataToFirestore(cred.user.uid);
@@ -1829,15 +2270,21 @@ export default function App() {
   const currentMonthName = MONTH_NAMES[appState.currentMonth];
   const signedInEmail = authUser?.email || backendSession?.email || null;
 
-  // Date Details Modal computed items
+  // Date Details Modal computed items (Notes scoped to active task)
   const detailsDateKey = toDateKey(
     appState.currentYear,
     appState.currentMonth,
     detailsTargetDay
   );
   const detailsNotes = useMemo(
-    () => getNotesForDate(calendarNotes, detailsDateKey),
-    [calendarNotes, detailsDateKey]
+    () =>
+      getNotesForDate(
+        calendarNotes,
+        detailsDateKey,
+        appState.activeTask || 'General',
+        isDefaultTaskActive
+      ),
+    [calendarNotes, detailsDateKey, appState.activeTask, isDefaultTaskActive]
   );
   const detailsExpenditures = useMemo(
     () => getExpendituresForDate(calendarExpenditures, detailsDateKey),
@@ -2125,106 +2572,122 @@ export default function App() {
           <div className="flex-1 min-h-0 flex flex-col bg-[#0f172a] border border-slate-800/90 rounded-xl overflow-hidden shadow-lg">
             {/* 1. TOP TRACKER HEADER BANNER (Top-corner expense display removed) */}
             <div className="tracker-header-banner py-2 px-4 flex flex-wrap items-center justify-between gap-2 shrink-0">
-              <div className="flex items-center gap-2">
-                <h2 className="text-xs sm:text-sm font-semibold text-slate-200 tracking-wider uppercase">
-                  {appState.activeTask} — {currentMonthName}{' '}
-                  {appState.currentYear}
+              <div className="flex flex-wrap items-center gap-2.5">
+                <h2
+                  data-testid="active-task-heading"
+                  className="text-xs sm:text-sm font-semibold text-slate-200 tracking-wider uppercase"
+                >
+                  {appState.activeTask || 'No Task Selected'} —{' '}
+                  {currentMonthName} {appState.currentYear}
                 </h2>
+                {appState.activeTask && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      openEditTaskModal(
+                        appState.activeTask,
+                        Math.max(0, appState.tasks.indexOf(appState.activeTask)),
+                        'days'
+                      )
+                    }
+                    title="Click to configure Target Days for this task"
+                    className="px-2 py-0.5 rounded-md bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/70 text-[10px] font-medium text-sky-300 flex items-center gap-1 transition cursor-pointer"
+                  >
+                    <i className="fa-regular fa-calendar-check text-[10px]"></i>
+                    <span>
+                      Target: {formatTargetDaysSummary(activeTaskTargetDays)}
+                    </span>
+                  </button>
+                )}
               </div>
             </div>
 
             {/* 2. COMPACT TASK TABS, MONTH NAVIGATION & STATS BAR */}
             <div className="px-4 py-2 bg-[#0f172a] border-b border-slate-800/80 shrink-0 flex flex-wrap items-center justify-between gap-2.5">
-              {/* Left: Task Tabs (Default/General can be renamed, cannot be deleted) */}
-              <div className="flex flex-wrap items-center gap-1.5">
-                {appState.tasks.map((taskName, taskIdx) => {
-                  const isActive = taskName === appState.activeTask;
-                  const isDefaultCategory =
-                    taskIdx === 0 ||
-                    taskName.trim().toLowerCase() === 'general' ||
-                    appState.tasks.length <= 1;
-                  return (
-                    <div
-                      key={`${taskIdx}-${taskName}`}
-                      className="relative group flex items-center"
-                    >
-                      <button
-                        type="button"
-                        onClick={() => selectTask(taskName)}
-                        onDoubleClick={() =>
-                          openRenameTaskModal(taskName, taskIdx)
-                        }
-                        className={
-                          isActive
-                            ? 'px-3.5 py-1.5 rounded-lg bg-sky-500 text-slate-950 font-semibold text-xs sm:text-sm transition flex items-center gap-1.5 shadow-sm cursor-pointer'
-                            : 'px-3.5 py-1.5 rounded-lg bg-[#162033] hover:bg-slate-800 border border-slate-800 text-slate-300 font-medium text-xs sm:text-sm transition flex items-center gap-1.5 cursor-pointer'
-                        }
+              {/* Left: Horizontally Scrollable Task List + Add Task Button */}
+              <div className="flex items-center gap-1.5 max-w-full overflow-x-auto pb-0.5 sm:pb-0">
+                {appState.tasks.length === 0 ? (
+                  <span className="text-xs text-slate-400 italic px-2 py-1">
+                    No tasks created yet
+                  </span>
+                ) : (
+                  appState.tasks.map((taskName, taskIdx) => {
+                    const isActive = taskName === appState.activeTask;
+                    const taskDays = normalizeTargetDays(
+                      appState.taskConfigs?.[taskName]?.targetDays
+                    );
+                    const hasCustomDays =
+                      taskDays.length > 0 && taskDays.length < 7;
+                    return (
+                      <div
+                        key={`${taskIdx}-${taskName}`}
+                        className="relative group flex items-center shrink-0"
                       >
-                        <span>{taskName}</span>
-                        <span
-                          role="button"
+                        <div
+                          onClick={() => selectTask(taskName)}
+                          onDoubleClick={() =>
+                            openEditTaskModal(taskName, taskIdx, 'name')
+                          }
+                          role="tab"
                           tabIndex={0}
-                          data-testid={`rename-task-${taskIdx}`}
-                          title={`Rename ${taskName}`}
-                          aria-label={`Rename ${taskName}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openRenameTaskModal(taskName, taskIdx);
-                          }}
+                          aria-selected={isActive}
+                          data-testid={`task-tab-${taskIdx}`}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter' || e.key === ' ') {
                               e.preventDefault();
-                              e.stopPropagation();
-                              openRenameTaskModal(taskName, taskIdx);
+                              selectTask(taskName);
                             }
                           }}
-                          className={`ml-0.5 transition text-[10px] ${
+                          className={
                             isActive
-                              ? 'text-slate-900/80 hover:text-slate-950'
-                              : 'text-slate-400 hover:text-sky-400'
-                          }`}
+                              ? ' pl-3 pr-1.5 py-1.5 rounded-lg bg-sky-500 text-slate-950 font-semibold text-xs sm:text-sm transition flex items-center gap-1.5 shadow-sm cursor-pointer select-none'
+                              : 'pl-3 pr-1.5 py-1.5 rounded-lg bg-[#162033] hover:bg-slate-800 border border-slate-800 text-slate-300 font-medium text-xs sm:text-sm transition flex items-center gap-1.5 cursor-pointer select-none'
+                          }
                         >
-                          <i className="fa-solid fa-pen"></i>
-                        </span>
-                        {!isDefaultCategory && (
-                          <span
-                            role="button"
-                            tabIndex={0}
-                            data-testid={`delete-task-${taskIdx}`}
-                            title={`Delete ${taskName}`}
-                            aria-label={`Delete ${taskName}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              deleteTask(taskName, taskIdx);
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                deleteTask(taskName, taskIdx);
-                              }
-                            }}
-                            className={`ml-0.5 opacity-80 group-hover:opacity-100 transition text-[11px] ${
+                          <span className="truncate max-w-[140px]">
+                            {taskName}
+                          </span>
+                          {hasCustomDays && (
+                            <span
+                              title={`Target Days: ${formatTargetDaysSummary(
+                                taskDays
+                              )}`}
+                              className={`text-[9px] px-1 py-0.5 rounded font-semibold leading-none ${
+                                isActive
+                                  ? 'bg-slate-950/20 text-slate-950'
+                                  : 'bg-sky-500/15 text-sky-300'
+                              }`}
+                            >
+                              {taskDays.length}d
+                            </span>
+                          )}
+
+                          {/* 3-Dot Task Management Menu Button */}
+                          <button
+                            type="button"
+                            data-testid={`task-menu-btn-${taskIdx}`}
+                            title={`Task options for ${taskName}`}
+                            aria-label={`Task options for ${taskName}`}
+                            onClick={(e) => openTaskMenu(e, taskName, taskIdx)}
+                            className={`w-5 h-5 rounded-md flex items-center justify-center transition cursor-pointer ${
                               isActive
-                                ? 'text-slate-900 hover:text-rose-900'
-                                : 'text-slate-400 hover:text-rose-400'
+                                ? 'text-slate-900 hover:bg-slate-950/15'
+                                : 'text-slate-400 hover:text-slate-100 hover:bg-slate-700/70'
                             }`}
                           >
-                            <i className="fa-solid fa-xmark"></i>
-                          </span>
-                        )}
-                      </button>
-                    </div>
-                  );
-                })}
+                            <i className="fa-solid fa-ellipsis-vertical text-[11px]"></i>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
 
                 <button
                   type="button"
-                  onClick={() => {
-                    setNewTaskName('');
-                    setAddTaskModalOpen(true);
-                  }}
-                  className="px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 font-semibold text-xs sm:text-sm flex items-center gap-1.5 transition cursor-pointer"
+                  data-testid="add-task-button"
+                  onClick={openAddTaskModal}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 font-semibold text-xs sm:text-sm flex items-center gap-1.5 transition cursor-pointer shrink-0"
                 >
                   <i className="fa-solid fa-plus text-xs"></i>
                   <span>Add Task</span>
@@ -2330,13 +2793,16 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Right: COMPLETED | NOT COMPLETED | SKIPPED | SUCCESS RATE (based on all days of month) */}
+              {/* Right: COMPLETED | NOT COMPLETED | SKIPPED | SUCCESS RATE (respecting Target Weekdays) */}
               <div className="flex flex-wrap items-center gap-2">
                 <div className="stat-completed px-3 py-1 rounded-lg min-w-[84px] text-center">
                   <div className="text-[10px] font-semibold uppercase tracking-wider text-emerald-400">
                     Completed
                   </div>
-                  <div className="text-sm sm:text-base font-bold text-slate-100 leading-tight">
+                  <div
+                    data-testid="stat-completed-value"
+                    className="text-sm sm:text-base font-bold text-slate-100 leading-tight"
+                  >
                     {activeStats.completed}
                   </div>
                 </div>
@@ -2345,7 +2811,10 @@ export default function App() {
                   <div className="text-[10px] font-semibold uppercase tracking-wider text-rose-400">
                     Not Completed
                   </div>
-                  <div className="text-sm sm:text-base font-bold text-slate-100 leading-tight">
+                  <div
+                    data-testid="stat-not-completed-value"
+                    className="text-sm sm:text-base font-bold text-slate-100 leading-tight"
+                  >
                     {activeStats.notCompleted}
                   </div>
                 </div>
@@ -2354,19 +2823,25 @@ export default function App() {
                   <div className="text-[10px] font-semibold uppercase tracking-wider text-amber-400">
                     Skipped
                   </div>
-                  <div className="text-sm sm:text-base font-bold text-slate-100 leading-tight">
+                  <div
+                    data-testid="stat-skipped-value"
+                    className="text-sm sm:text-base font-bold text-slate-100 leading-tight"
+                  >
                     {activeStats.skipped}
                   </div>
                 </div>
 
                 <div
-                  title={`Completed ${activeStats.completed} of ${activeStats.daysInMonth} days in ${currentMonthName}`}
+                  title={`Completed ${activeStats.completed} of ${activeStats.eligibleDaysInMonth} target days in ${currentMonthName}`}
                   className="stat-rate px-3 py-1 rounded-lg min-w-[92px] text-center"
                 >
                   <div className="text-[10px] font-semibold uppercase tracking-wider text-sky-400">
                     Success Rate
                   </div>
-                  <div className="text-sm sm:text-base font-bold text-slate-100 leading-tight">
+                  <div
+                    data-testid="stat-rate-value"
+                    className="text-sm sm:text-base font-bold text-slate-100 leading-tight"
+                  >
                     {activeStats.rate}%
                   </div>
                 </div>
@@ -2375,213 +2850,315 @@ export default function App() {
 
             {/* 3. CLEAN DAYS OF WEEK HEADER (SUN - SAT) */}
             <div className="grid grid-cols-7 day-of-week-header border-b border-slate-800/90 shrink-0">
-              <div className="py-1.5 text-center font-semibold text-[11px] border-r border-slate-800/60">
-                SUN
-              </div>
-              <div className="py-1.5 text-center font-semibold text-[11px] border-r border-slate-800/60">
-                MON
-              </div>
-              <div className="py-1.5 text-center font-semibold text-[11px] border-r border-slate-800/60">
-                TUE
-              </div>
-              <div className="py-1.5 text-center font-semibold text-[11px] border-r border-slate-800/60">
-                WED
-              </div>
-              <div className="py-1.5 text-center font-semibold text-[11px] border-r border-slate-800/60">
-                THU
-              </div>
-              <div className="py-1.5 text-center font-semibold text-[11px] border-r border-slate-800/60">
-                FRI
-              </div>
-              <div className="py-1.5 text-center font-semibold text-[11px]">
-                SAT
-              </div>
-            </div>
-
-            {/* 4. 6x7 CALENDAR GRID WITH CIRCULAR DATES + NOTE & EXPENDITURE INDICATORS */}
-            <div className="flex-1 min-h-0 grid grid-cols-7 grid-rows-6 bg-[#0b0f19]">
-              {Array.from({ length: 42 }).map((_, i) => {
-                const dayNumber = i - firstDayIndex + 1;
-                if (dayNumber < 1 || dayNumber > daysInMonth) {
-                  return (
-                    <div
-                      key={`empty-${i}`}
-                      className="calendar-cell opacity-40"
-                    />
-                  );
-                }
-
-                const key = getRecordKey(
-                  appState.activeTask,
-                  appState.currentYear,
-                  appState.currentMonth,
-                  dayNumber
-                );
-                const rawRecord = appState.records[key] || {
-                  status: null,
-                  note: '',
-                };
-                const status = normalizeStatus(rawRecord.status);
-                const isSelectedDay = dayNumber === appState.selectedDay;
-
-                const cellDateKey = toDateKey(
-                  appState.currentYear,
-                  appState.currentMonth,
-                  dayNumber
-                );
-                const dayNotes = getNotesForDate(calendarNotes, cellDateKey);
-                const dayExpInfo = getDailyExpenditureInfo(
-                  calendarExpenditures,
-                  cellDateKey
-                );
-
-                let cellStatusClass = '';
-                let circleClass = 'date-circle-unmarked';
-
-                if (status === 'completed') {
-                  cellStatusClass = 'status-completed';
-                  circleClass = 'date-circle-completed';
-                } else if (status === 'not_completed') {
-                  cellStatusClass = 'status-not_completed';
-                  circleClass = 'date-circle-not_completed';
-                } else if (status === 'skipped') {
-                  cellStatusClass = 'status-skipped';
-                  circleClass = 'date-circle-skipped';
-                }
-
+              {WEEKDAY_OPTIONS.map((w, idx) => {
+                const isTargetDay =
+                  activeTaskTargetDays.length === 0 ||
+                  activeTaskTargetDays.length === 7 ||
+                  activeTaskTargetDays.includes(w.index);
                 return (
                   <div
-                    key={`day-${dayNumber}`}
-                    tabIndex={0}
-                    role="button"
-                    aria-label={`${dayNumber} ${currentMonthName} ${appState.currentYear}${
-                      dayNotes.length > 0 ? ', Notes available' : ''
-                    }${
-                      dayExpInfo.hasEntries
-                        ? `, Expenditure ${formatINR(dayExpInfo.dailyTotal)}`
-                        : ''
-                    }`}
-                    onClick={() => handleDayCellClick(dayNumber)}
-                    onContextMenu={(e) => handleCellContextMenu(e, dayNumber)}
-                    onTouchStart={(e) => handleCellTouchStart(e, dayNumber)}
-                    onTouchEnd={handleCellTouchEnd}
-                    onTouchMove={handleCellTouchEnd}
-                    onKeyDown={(e) => handleCellKeyDown(e, dayNumber)}
-                    className={`calendar-cell active-day p-1 flex flex-col items-center justify-center cursor-pointer group focus:outline-none focus:ring-2 focus:ring-sky-400/70 ${cellStatusClass} ${
-                      isSelectedDay ? 'selected-day' : ''
-                    }`}
+                    key={w.short}
+                    className={`py-1.5 text-center font-semibold text-[11px] ${
+                      idx < 6 ? 'border-r border-slate-800/60' : ''
+                    } ${!isTargetDay ? 'opacity-45' : ''}`}
                   >
-                    {/* Top-Left Corner: Separate Note Icon & Expenditure Icon side by side */}
-                    {(dayNotes.length > 0 || dayExpInfo.hasEntries) && (
-                      <div
-                        onClick={(e) => e.stopPropagation()}
-                        onTouchStart={(e) => e.stopPropagation()}
-                        onTouchEnd={(e) => e.stopPropagation()}
-                        className="absolute top-1 left-1 z-20 flex items-center gap-1"
-                      >
-                        {dayNotes.length > 0 && (
-                          <button
-                            type="button"
-                            data-testid={`note-icon-${dayNumber}`}
-                            title="View Notes"
-                            aria-label="View Notes"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openViewDetailsModal(dayNumber, 'notes');
-                            }}
-                            onTouchStart={(e) => e.stopPropagation()}
-                            onTouchEnd={(e) => e.stopPropagation()}
-                            className="h-5 min-w-[20px] px-1 rounded-md bg-amber-500/25 hover:bg-amber-500/40 border border-amber-400/60 text-amber-300 text-[10px] font-semibold flex items-center justify-center gap-0.5 transition cursor-pointer shadow-sm"
-                          >
-                            <svg
-                              className="w-2.5 h-2.5 shrink-0 fill-current"
-                              viewBox="0 0 16 16"
-                              aria-hidden="true"
-                            >
-                              <path d="M2.5 1A1.5 1.5 0 0 0 1 2.5v11A1.5 1.5 0 0 0 2.5 15h6.086a1.5 1.5 0 0 0 1.06-.44l4.915-4.914A1.5 1.5 0 0 0 15 8.586V2.5A1.5 1.5 0 0 0 13.5 1h-11zM2 2.5a.5.5 0 0 1 .5-.5h11a.5.5 0 0 1 .5.5V8H9.5A1.5 1.5 0 0 0 8 9.5V14H2.5a.5.5 0 0 1-.5-.5v-11zm7 11.293V9.5a.5.5 0 0 1 .5-.5h4.293L9 13.793z" />
-                            </svg>
-                            {dayNotes.length > 1 && (
-                              <span className="leading-none text-[9px] tabular-nums">
-                                {dayNotes.length}
-                              </span>
-                            )}
-                          </button>
-                        )}
-
-                        {dayExpInfo.hasEntries && (
-                          <button
-                            type="button"
-                            data-testid={`expenditure-icon-${dayNumber}`}
-                            title="View Expenditure"
-                            aria-label="View Expenditure"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openViewDetailsModal(dayNumber, 'expenditure');
-                            }}
-                            onTouchStart={(e) => e.stopPropagation()}
-                            onTouchEnd={(e) => e.stopPropagation()}
-                            className="h-5 min-w-[20px] px-1 rounded-md bg-emerald-500/25 hover:bg-emerald-500/40 border border-emerald-400/60 text-emerald-300 text-[10px] font-semibold flex items-center justify-center gap-0.5 transition cursor-pointer shadow-sm"
-                          >
-                            <svg
-                              className="w-2.5 h-2.5 shrink-0 fill-current"
-                              viewBox="0 0 16 16"
-                              aria-hidden="true"
-                            >
-                              <path d="M1.5 2A1.5 1.5 0 0 0 0 3.5v9A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5v-9A1.5 1.5 0 0 0 14.5 2h-13zm13 1a.5.5 0 0 1 .5.5v2h-3.5a2.5 2.5 0 0 0 0 5H15v2a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-9a.5.5 0 0 1 .5-.5h13zM11.5 6.5H15v3h-3.5a1.5 1.5 0 0 1 0-3zm0 2a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1z" />
-                            </svg>
-                            {dayExpInfo.count > 1 && (
-                              <span className="leading-none text-[9px] tabular-nums">
-                                {dayExpInfo.count}
-                              </span>
-                            )}
-                          </button>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Top-Right Corner: Accessible Mobile / Quick Context Menu Trigger */}
-                    <button
-                      type="button"
-                      title="Date options (Add Note, Add Expenditure, View Details)"
-                      aria-label={`Open options for ${dayNumber} ${currentMonthName}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        openContextMenuAt(dayNumber, rect.left, rect.bottom + 4);
-                      }}
-                      onTouchStart={(e) => e.stopPropagation()}
-                      onTouchEnd={(e) => e.stopPropagation()}
-                      className="absolute top-1 right-1 z-20 w-5 h-5 rounded bg-slate-800/70 hover:bg-slate-700 text-slate-400 hover:text-slate-100 opacity-60 sm:opacity-0 group-hover:opacity-100 focus:opacity-100 flex items-center justify-center text-[10px] transition cursor-pointer"
-                    >
-                      <i className="fa-solid fa-ellipsis-vertical"></i>
-                    </button>
-
-                    {/* Center Circular Color-Coded Date Badge */}
-                    <div className={`date-circle ${circleClass}`}>
-                      <span>{dayNumber}</span>
-                      {status === 'completed' && (
-                        <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-950 border border-emerald-300 text-emerald-300 flex items-center justify-center text-[9px] shadow">
-                          <i className="fa-solid fa-check"></i>
-                        </span>
-                      )}
-                      {status === 'not_completed' && (
-                        <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-rose-950 border border-rose-300 text-rose-300 flex items-center justify-center text-[9px] shadow">
-                          <i className="fa-solid fa-xmark"></i>
-                        </span>
-                      )}
-                      {status === 'skipped' && (
-                        <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-amber-950 border border-amber-300 text-amber-300 flex items-center justify-center text-[9px] shadow">
-                          <i className="fa-solid fa-minus"></i>
-                        </span>
-                      )}
-                    </div>
+                    {w.short.toUpperCase()}
                   </div>
                 );
               })}
             </div>
+
+            {/* 4. 6x7 CALENDAR GRID WITH CIRCULAR DATES + NOTE & EXPENDITURE INDICATORS (OR EMPTY STATE) */}
+            {appState.tasks.length === 0 ? (
+              <div
+                data-testid="empty-tasks-state"
+                className="flex-1 min-h-0 flex flex-col items-center justify-center p-6 text-center bg-[#0b0f19]"
+              >
+                <div className="w-12 h-12 rounded-2xl bg-sky-500/10 border border-sky-500/30 text-sky-400 flex items-center justify-center mb-3">
+                  <i className="fa-solid fa-list-check text-lg"></i>
+                </div>
+                <h3 className="text-sm sm:text-base font-bold text-slate-100 mb-1">
+                  No Tasks Created Yet
+                </h3>
+                <p className="text-xs text-slate-400 max-w-sm mb-4">
+                  Create your first task to start tracking daily progress,
+                  target weekdays, and task-specific notes on the calendar.
+                </p>
+                <button
+                  type="button"
+                  onClick={openAddTaskModal}
+                  className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 shadow-md transition cursor-pointer"
+                >
+                  <i className="fa-solid fa-plus"></i>
+                  <span>Add Your First Task</span>
+                </button>
+              </div>
+            ) : (
+              <div className="flex-1 min-h-0 grid grid-cols-7 grid-rows-6 bg-[#0b0f19]">
+                {Array.from({ length: 42 }).map((_, i) => {
+                  const dayNumber = i - firstDayIndex + 1;
+                  if (dayNumber < 1 || dayNumber > daysInMonth) {
+                    return (
+                      <div
+                        key={`empty-${i}`}
+                        className="calendar-cell opacity-40"
+                      />
+                    );
+                  }
+
+                  const isAllowedWeekday = isDateAllowedByTargetDays(
+                    appState.currentYear,
+                    appState.currentMonth,
+                    dayNumber,
+                    activeTaskTargetDays
+                  );
+
+                  const key = getRecordKey(
+                    appState.activeTask,
+                    appState.currentYear,
+                    appState.currentMonth,
+                    dayNumber
+                  );
+                  const rawRecord = appState.records[key] || {
+                    status: null,
+                    note: '',
+                  };
+                  const status = isAllowedWeekday
+                    ? normalizeStatus(rawRecord.status)
+                    : null;
+                  const isSelectedDay = dayNumber === appState.selectedDay;
+
+                  const cellDateKey = toDateKey(
+                    appState.currentYear,
+                    appState.currentMonth,
+                    dayNumber
+                  );
+                  const dayNotes = getNotesForDate(
+                    calendarNotes,
+                    cellDateKey,
+                    appState.activeTask || 'General',
+                    isDefaultTaskActive
+                  );
+                  const dayExpInfo = getDailyExpenditureInfo(
+                    calendarExpenditures,
+                    cellDateKey
+                  );
+
+                  let cellStatusClass = '';
+                  let circleClass = isAllowedWeekday
+                    ? 'date-circle-unmarked'
+                    : 'date-circle-disabled';
+
+                  if (isAllowedWeekday) {
+                    if (status === 'completed') {
+                      cellStatusClass = 'status-completed';
+                      circleClass = 'date-circle-completed';
+                    } else if (status === 'not_completed') {
+                      cellStatusClass = 'status-not_completed';
+                      circleClass = 'date-circle-not_completed';
+                    } else if (status === 'skipped') {
+                      cellStatusClass = 'status-skipped';
+                      circleClass = 'date-circle-skipped';
+                    }
+                  }
+
+                  return (
+                    <div
+                      key={`day-${dayNumber}`}
+                      tabIndex={0}
+                      role="button"
+                      aria-disabled={!isAllowedWeekday}
+                      data-testid={`calendar-day-${dayNumber}`}
+                      aria-label={`${dayNumber} ${currentMonthName} ${appState.currentYear}${
+                        !isAllowedWeekday ? ', Not a target day' : ''
+                      }${dayNotes.length > 0 ? ', Notes available' : ''}${
+                        dayExpInfo.hasEntries
+                          ? `, Expenditure ${formatINR(dayExpInfo.dailyTotal)}`
+                          : ''
+                      }`}
+                      onClick={() => handleDayCellClick(dayNumber)}
+                      onContextMenu={(e) => handleCellContextMenu(e, dayNumber)}
+                      onTouchStart={(e) => handleCellTouchStart(e, dayNumber)}
+                      onTouchEnd={handleCellTouchEnd}
+                      onTouchMove={handleCellTouchEnd}
+                      onKeyDown={(e) => handleCellKeyDown(e, dayNumber)}
+                      className={`calendar-cell ${
+                        isAllowedWeekday
+                          ? 'active-day cursor-pointer'
+                          : 'disabled-weekday'
+                      } p-1 flex flex-col items-center justify-center group focus:outline-none focus:ring-2 focus:ring-sky-400/70 ${cellStatusClass} ${
+                        isSelectedDay ? 'selected-day' : ''
+                      }`}
+                    >
+                      {/* Top-Left Corner: Separate Note Icon & Expenditure Icon side by side */}
+                      {(dayNotes.length > 0 || dayExpInfo.hasEntries) && (
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          onTouchStart={(e) => e.stopPropagation()}
+                          onTouchEnd={(e) => e.stopPropagation()}
+                          className="absolute top-1 left-1 z-20 flex items-center gap-1"
+                        >
+                          {dayNotes.length > 0 && (
+                            <button
+                              type="button"
+                              data-testid={`note-icon-${dayNumber}`}
+                              title="View Notes"
+                              aria-label="View Notes"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openViewDetailsModal(dayNumber, 'notes');
+                              }}
+                              onTouchStart={(e) => e.stopPropagation()}
+                              onTouchEnd={(e) => e.stopPropagation()}
+                              className="h-5 min-w-[20px] px-1 rounded-md bg-amber-500/25 hover:bg-amber-500/40 border border-amber-400/60 text-amber-300 text-[10px] font-semibold flex items-center justify-center gap-0.5 transition cursor-pointer shadow-sm"
+                            >
+                              <svg
+                                className="w-2.5 h-2.5 shrink-0 fill-current"
+                                viewBox="0 0 16 16"
+                                aria-hidden="true"
+                              >
+                                <path d="M2.5 1A1.5 1.5 0 0 0 1 2.5v11A1.5 1.5 0 0 0 2.5 15h6.086a1.5 1.5 0 0 0 1.06-.44l4.915-4.914A1.5 1.5 0 0 0 15 8.586V2.5A1.5 1.5 0 0 0 13.5 1h-11zM2 2.5a.5.5 0 0 1 .5-.5h11a.5.5 0 0 1 .5.5V8H9.5A1.5 1.5 0 0 0 8 9.5V14H2.5a.5.5 0 0 1-.5-.5v-11zm7 11.293V9.5a.5.5 0 0 1 .5-.5h4.293L9 13.793z" />
+                              </svg>
+                              {dayNotes.length > 1 && (
+                                <span className="leading-none text-[9px] tabular-nums">
+                                  {dayNotes.length}
+                                </span>
+                              )}
+                            </button>
+                          )}
+
+                          {dayExpInfo.hasEntries && (
+                            <button
+                              type="button"
+                              data-testid={`expenditure-icon-${dayNumber}`}
+                              title="View Expenditure"
+                              aria-label="View Expenditure"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openViewDetailsModal(dayNumber, 'expenditure');
+                              }}
+                              onTouchStart={(e) => e.stopPropagation()}
+                              onTouchEnd={(e) => e.stopPropagation()}
+                              className="h-5 min-w-[20px] px-1 rounded-md bg-emerald-500/25 hover:bg-emerald-500/40 border border-emerald-400/60 text-emerald-300 text-[10px] font-semibold flex items-center justify-center gap-0.5 transition cursor-pointer shadow-sm"
+                            >
+                              <svg
+                                className="w-2.5 h-2.5 shrink-0 fill-current"
+                                viewBox="0 0 16 16"
+                                aria-hidden="true"
+                              >
+                                <path d="M1.5 2A1.5 1.5 0 0 0 0 3.5v9A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5v-9A1.5 1.5 0 0 0 14.5 2h-13zm13 1a.5.5 0 0 1 .5.5v2h-3.5a2.5 2.5 0 0 0 0 5H15v2a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-9a.5.5 0 0 1 .5-.5h13zM11.5 6.5H15v3h-3.5a1.5 1.5 0 0 1 0-3zm0 2a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1z" />
+                              </svg>
+                              {dayExpInfo.count > 1 && (
+                                <span className="leading-none text-[9px] tabular-nums">
+                                  {dayExpInfo.count}
+                                </span>
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Top-Right Corner: Accessible Mobile / Quick Context Menu Trigger */}
+                      <button
+                        type="button"
+                        title="Date options (Add Note, Add Expenditure, View Details)"
+                        aria-label={`Open options for ${dayNumber} ${currentMonthName}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          openContextMenuAt(dayNumber, rect.left, rect.bottom + 4);
+                        }}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onTouchEnd={(e) => e.stopPropagation()}
+                        className="absolute top-1 right-1 z-20 w-5 h-5 rounded bg-slate-800/70 hover:bg-slate-700 text-slate-400 hover:text-slate-100 opacity-60 sm:opacity-0 group-hover:opacity-100 focus:opacity-100 flex items-center justify-center text-[10px] transition cursor-pointer"
+                      >
+                        <i className="fa-solid fa-ellipsis-vertical"></i>
+                      </button>
+
+                      {/* Center Circular Color-Coded Date Badge */}
+                      <div className={`date-circle ${circleClass}`}>
+                        <span>{dayNumber}</span>
+                        {status === 'completed' && (
+                          <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-950 border border-emerald-300 text-emerald-300 flex items-center justify-center text-[9px] shadow">
+                            <i className="fa-solid fa-check"></i>
+                          </span>
+                        )}
+                        {status === 'not_completed' && (
+                          <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-rose-950 border border-rose-300 text-rose-300 flex items-center justify-center text-[9px] shadow">
+                            <i className="fa-solid fa-xmark"></i>
+                          </span>
+                        )}
+                        {status === 'skipped' && (
+                          <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-amber-950 border border-amber-300 text-amber-300 flex items-center justify-center text-[9px] shadow">
+                            <i className="fa-solid fa-minus"></i>
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </main>
       </div>
+
+      {/* ========================================== */}
+      {/* FLOATING TASK 3-DOT MANAGEMENT MENU */}
+      {/* ========================================== */}
+      {taskMenuState && (
+        <div
+          style={{ top: taskMenuState.y, left: taskMenuState.x }}
+          onClick={(e) => e.stopPropagation()}
+          data-testid="task-action-menu"
+          className="fixed z-50 w-48 bg-[#111827] border border-slate-700 rounded-xl shadow-2xl overflow-hidden py-1 text-xs"
+        >
+          <div className="px-3 py-1.5 border-b border-slate-800 text-[11px] font-bold text-slate-300 truncate">
+            Task: {taskMenuState.taskName}
+          </div>
+          <button
+            type="button"
+            data-testid="menu-rename-task"
+            onClick={() =>
+              openEditTaskModal(
+                taskMenuState.taskName,
+                taskMenuState.taskIndex,
+                'name'
+              )
+            }
+            className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5 transition cursor-pointer"
+          >
+            <i className="fa-solid fa-pen text-sky-400 w-4 text-center"></i>
+            <span>Rename Task</span>
+          </button>
+          <button
+            type="button"
+            data-testid="menu-edit-target-days"
+            onClick={() =>
+              openEditTaskModal(
+                taskMenuState.taskName,
+                taskMenuState.taskIndex,
+                'days'
+              )
+            }
+            className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5 transition cursor-pointer"
+          >
+            <i className="fa-regular fa-calendar-check text-emerald-400 w-4 text-center"></i>
+            <span>Edit Target Days</span>
+          </button>
+          <button
+            type="button"
+            data-testid="menu-delete-task"
+            onClick={() =>
+              requestDeleteTask(taskMenuState.taskName, taskMenuState.taskIndex)
+            }
+            className="w-full px-3.5 py-2 text-left text-rose-300 hover:bg-rose-950/60 flex items-center gap-2.5 border-t border-slate-800/80 transition cursor-pointer"
+          >
+            <i className="fa-solid fa-trash-can text-rose-400 w-4 text-center"></i>
+            <span>Delete Task</span>
+          </button>
+        </div>
+      )}
 
       {/* ========================================== */}
       {/* FLOATING CALENDAR DATE CONTEXT MENU */}
@@ -3326,7 +3903,7 @@ export default function App() {
                           </label>
                           <input
                             type="text"
-                            placeholder="+91 98765 43210"
+                            placeholder="XXXXX"
                             value={authPhone}
                             onChange={(e) => setAuthPhone(e.target.value)}
                             className="w-full px-3.5 py-2 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400"
@@ -3539,7 +4116,7 @@ export default function App() {
                   <input
                     type="text"
                     required
-                    placeholder="+91 98765 43210"
+                    placeholder="XXXXX"
                     value={editPhone}
                     onChange={(e) => setEditPhone(e.target.value)}
                     className="w-full px-3.5 py-2 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400"
@@ -3584,49 +4161,132 @@ export default function App() {
       {/* MODAL 2: ADD NEW TASK MODAL */}
       {/* ========================================== */}
       {addTaskModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#0f172a] border border-slate-700/80 rounded-2xl max-w-sm w-full overflow-hidden shadow-2xl">
+        <div
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
+          data-testid="add-task-modal"
+        >
+          <div className="bg-[#0f172a] border border-slate-700/80 rounded-2xl max-w-md w-full overflow-hidden shadow-2xl">
             <div className="tracker-header-banner px-5 py-3.5 flex items-center justify-between">
-              <h3 className="font-bold text-slate-100 text-sm tracking-tight flex items-center gap-2">
-                <i className="fa-solid fa-plus-circle text-emerald-400"></i> Add New Task
+              <h3 className="font-bold text-slate-100 text-sm sm:text-base tracking-tight flex items-center gap-2">
+                <i className="fa-solid fa-plus-circle text-emerald-400"></i> Add Task
               </h3>
               <button
                 type="button"
-                onClick={() => setAddTaskModalOpen(false)}
-                className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition cursor-pointer"
+                disabled={addTaskSubmitting}
+                onClick={() => {
+                  setAddTaskModalOpen(false);
+                  setAddTaskError(null);
+                }}
+                className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition cursor-pointer disabled:opacity-50"
               >
                 <i className="fa-solid fa-xmark"></i>
               </button>
             </div>
             <form onSubmit={handleAddTaskSubmit} className="p-5 space-y-4">
+              {addTaskError && (
+                <div
+                  data-testid="add-task-error"
+                  className="p-3 rounded-xl bg-rose-950/70 border border-rose-500/40 text-rose-300 text-xs font-medium leading-relaxed"
+                >
+                  {addTaskError}
+                </div>
+              )}
+
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                  Task Name
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Task Name *
                 </label>
                 <input
                   type="text"
-                  required
                   autoFocus
-                  maxLength={28}
-                  placeholder="e.g. Science, Fitness, Reading, Coding"
+                  maxLength={60}
+                  data-testid="add-task-name-input"
+                  placeholder="e.g. Reading, Mathematics, Physics, Workout, Coding"
                   value={newTaskName}
-                  onChange={(e) => setNewTaskName(e.target.value)}
+                  onChange={(e) => {
+                    setNewTaskName(e.target.value);
+                    if (addTaskError) setAddTaskError(null);
+                  }}
                   className="w-full px-3.5 py-2.5 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-emerald-400"
                 />
               </div>
-              <div className="flex items-center justify-end gap-2">
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-semibold text-slate-300">
+                    Target Days <span className="text-slate-500 font-normal">(Optional)</span>
+                  </label>
+                  {newTaskTargetDays.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setNewTaskTargetDays([])}
+                      className="text-[11px] font-medium text-sky-400 hover:text-sky-300 cursor-pointer"
+                    >
+                      Clear selection
+                    </button>
+                  )}
+                </div>
+
+                <div
+                  className="grid grid-cols-7 gap-1.5"
+                  data-testid="add-task-weekday-selector"
+                >
+                  {WEEKDAY_OPTIONS.map((dayOpt) => {
+                    const isSelected = newTaskTargetDays.includes(dayOpt.index);
+                    return (
+                      <button
+                        key={dayOpt.index}
+                        type="button"
+                        data-testid={`add-task-weekday-${dayOpt.index}`}
+                        aria-pressed={isSelected}
+                        onClick={() => toggleNewTaskWeekday(dayOpt.index)}
+                        title={dayOpt.full}
+                        className={`py-2 px-1 rounded-lg text-[11px] font-bold tracking-tight border transition cursor-pointer flex flex-col items-center justify-center gap-0.5 ${
+                          isSelected
+                            ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300 shadow-sm'
+                            : 'bg-[#0b0f19] border-slate-700/80 text-slate-400 hover:border-slate-500 hover:text-slate-200'
+                        }`}
+                      >
+                        <span>{dayOpt.short}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <p className="mt-2 text-[11px] text-slate-400 leading-relaxed">
+                  If one or more days are selected, progress tracking is enabled only on those days. If no weekday is selected, tracking is allowed every day.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-1">
                 <button
                   type="button"
-                  onClick={() => setAddTaskModalOpen(false)}
-                  className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold cursor-pointer"
+                  disabled={addTaskSubmitting}
+                  onClick={() => {
+                    setAddTaskModalOpen(false);
+                    setAddTaskError(null);
+                  }}
+                  className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold cursor-pointer disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold tracking-wide cursor-pointer"
+                  disabled={addTaskSubmitting}
+                  data-testid="submit-add-task-btn"
+                  className="px-5 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold tracking-wide cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
                 >
-                  Add Task
+                  {addTaskSubmitting ? (
+                    <>
+                      <i className="fa-solid fa-spinner fa-spin text-xs"></i>
+                      <span>Adding Task...</span>
+                    </>
+                  ) : (
+                    <>
+                      <i className="fa-solid fa-plus text-xs"></i>
+                      <span>Add Task</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>
@@ -3635,55 +4295,211 @@ export default function App() {
       )}
 
       {/* ========================================== */}
-      {/* MODAL 3: RENAME TASK CATEGORY MODAL */}
+      {/* MODAL 3: EDIT TASK / TARGET DAYS MODAL */}
       {/* ========================================== */}
       {renameTaskModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#0f172a] border border-slate-700/80 rounded-2xl max-w-sm w-full overflow-hidden shadow-2xl">
+        <div
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
+          data-testid="edit-task-modal"
+        >
+          <div className="bg-[#0f172a] border border-slate-700/80 rounded-2xl max-w-md w-full overflow-hidden shadow-2xl">
             <div className="tracker-header-banner px-5 py-3.5 flex items-center justify-between">
-              <h3 className="font-bold text-slate-100 text-sm tracking-tight flex items-center gap-2">
-                <i className="fa-solid fa-pen text-sky-400"></i> Rename Task Category
+              <h3 className="font-bold text-slate-100 text-sm sm:text-base tracking-tight flex items-center gap-2">
+                <i
+                  className={`fa-solid ${
+                    editTaskFocusSection === 'days'
+                      ? 'fa-calendar-week text-emerald-400'
+                      : 'fa-pen text-sky-400'
+                  }`}
+                ></i>
+                <span>
+                  {editTaskFocusSection === 'days'
+                    ? 'Edit Target Days'
+                    : 'Rename Task & Target Days'}
+                </span>
               </h3>
               <button
                 type="button"
-                onClick={() => setRenameTaskModalOpen(false)}
-                className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition cursor-pointer"
+                disabled={editTaskSubmitting}
+                onClick={() => {
+                  setRenameTaskModalOpen(false);
+                  setEditTaskError(null);
+                }}
+                className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition cursor-pointer disabled:opacity-50"
               >
                 <i className="fa-solid fa-xmark"></i>
               </button>
             </div>
             <form onSubmit={handleRenameTaskSubmit} className="p-5 space-y-4">
+              {editTaskError && (
+                <div
+                  data-testid="edit-task-error"
+                  className="p-3 rounded-xl bg-rose-950/70 border border-rose-500/40 text-rose-300 text-xs font-medium leading-relaxed"
+                >
+                  {editTaskError}
+                </div>
+              )}
+
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                  Task Category Name
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Task Name *
                 </label>
                 <input
                   type="text"
-                  required
-                  autoFocus
-                  maxLength={28}
-                  placeholder="Enter new task name"
+                  autoFocus={editTaskFocusSection === 'name'}
+                  maxLength={60}
+                  data-testid="edit-task-name-input"
+                  placeholder="Enter task name"
                   value={renameTaskInput}
-                  onChange={(e) => setRenameTaskInput(e.target.value)}
+                  onChange={(e) => {
+                    setRenameTaskInput(e.target.value);
+                    if (editTaskError) setEditTaskError(null);
+                  }}
                   className="w-full px-3.5 py-2.5 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-sky-400"
                 />
               </div>
-              <div className="flex items-center justify-end gap-2">
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-semibold text-slate-300">
+                    Target Days <span className="text-slate-500 font-normal">(Optional)</span>
+                  </label>
+                  {editTaskTargetDays.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setEditTaskTargetDays([])}
+                      className="text-[11px] font-medium text-sky-400 hover:text-sky-300 cursor-pointer"
+                    >
+                      Clear selection
+                    </button>
+                  )}
+                </div>
+
+                <div
+                  className="grid grid-cols-7 gap-1.5"
+                  data-testid="edit-task-weekday-selector"
+                >
+                  {WEEKDAY_OPTIONS.map((dayOpt) => {
+                    const isSelected = editTaskTargetDays.includes(dayOpt.index);
+                    return (
+                      <button
+                        key={dayOpt.index}
+                        type="button"
+                        data-testid={`edit-task-weekday-${dayOpt.index}`}
+                        aria-pressed={isSelected}
+                        onClick={() => toggleEditTaskWeekday(dayOpt.index)}
+                        title={dayOpt.full}
+                        className={`py-2 px-1 rounded-lg text-[11px] font-bold tracking-tight border transition cursor-pointer flex flex-col items-center justify-center gap-0.5 ${
+                          isSelected
+                            ? 'bg-sky-500/20 border-sky-400 text-sky-300 shadow-sm'
+                            : 'bg-[#0b0f19] border-slate-700/80 text-slate-400 hover:border-slate-500 hover:text-slate-200'
+                        }`}
+                      >
+                        <span>{dayOpt.short}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <p className="mt-2 text-[11px] text-slate-400 leading-relaxed">
+                  If one or more days are selected, progress tracking is enabled only on those days. If no weekday is selected, tracking is allowed every day.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-1">
                 <button
                   type="button"
-                  onClick={() => setRenameTaskModalOpen(false)}
-                  className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold cursor-pointer"
+                  disabled={editTaskSubmitting}
+                  onClick={() => {
+                    setRenameTaskModalOpen(false);
+                    setEditTaskError(null);
+                  }}
+                  className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold cursor-pointer disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold tracking-wide cursor-pointer"
+                  disabled={editTaskSubmitting}
+                  data-testid="submit-edit-task-btn"
+                  className="px-5 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold tracking-wide cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
                 >
-                  Save Name
+                  {editTaskSubmitting ? (
+                    <>
+                      <i className="fa-solid fa-spinner fa-spin text-xs"></i>
+                      <span>Saving...</span>
+                    </>
+                  ) : (
+                    <span>Save Changes</span>
+                  )}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================== */}
+      {/* MODAL 4: DELETE TASK CONFIRMATION MODAL */}
+      {/* ========================================== */}
+      {deleteTaskConfirmTarget && (
+        <div
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
+          data-testid="delete-task-confirm-modal"
+        >
+          <div className="bg-[#0f172a] border border-slate-700/80 rounded-2xl max-w-sm w-full overflow-hidden shadow-2xl">
+            <div className="tracker-header-banner px-5 py-3.5 flex items-center justify-between">
+              <h3 className="font-bold text-slate-100 text-sm tracking-tight flex items-center gap-2">
+                <i className="fa-solid fa-triangle-exclamation text-rose-400"></i>
+                <span>Delete Task</span>
+              </h3>
+              <button
+                type="button"
+                disabled={deletingTask}
+                onClick={() => setDeleteTaskConfirmTarget(null)}
+                className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition cursor-pointer disabled:opacity-50"
+              >
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Are you sure you want to delete{' '}
+                <span className="font-bold text-white">
+                  &ldquo;{deleteTaskConfirmTarget.taskName}&rdquo;
+                </span>
+                ? Its saved progress history and task notes will also be permanently deleted.
+              </p>
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={deletingTask}
+                  onClick={() => setDeleteTaskConfirmTarget(null)}
+                  className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold cursor-pointer disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={deletingTask}
+                  data-testid="confirm-delete-task-btn"
+                  onClick={handleConfirmDeleteTask}
+                  className="px-4 py-2 rounded-lg bg-rose-500 hover:bg-rose-400 text-slate-950 text-xs font-bold tracking-wide cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  {deletingTask ? (
+                    <>
+                      <i className="fa-solid fa-spinner fa-spin text-xs"></i>
+                      <span>Deleting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <i className="fa-solid fa-trash-can text-xs"></i>
+                      <span>Delete Task</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -3701,3 +4517,4 @@ export default function App() {
     </div>
   );
 }
+

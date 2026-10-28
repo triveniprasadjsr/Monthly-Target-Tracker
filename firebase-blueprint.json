@@ -106,6 +106,10 @@
           "type": "object",
           "description": "Map of task__year-month__day to status and note"
         },
+        "taskConfigs": {
+          "type": "object",
+          "description": "Map of taskName to task configuration including taskId and targetDays (0-6)"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
