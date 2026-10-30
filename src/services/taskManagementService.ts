@@ -39,6 +39,7 @@ export interface TaskConfigItem {
   uid: string;
   name: string;
   targetDays: number[]; // [] means all 7 weekdays allowed
+  taskPassword?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -47,6 +48,7 @@ export interface TaskConfigMapEntry {
   taskId: string;
   name: string;
   targetDays: number[];
+  taskPassword?: string;
 }
 
 /**
@@ -190,7 +192,7 @@ export function subscribeToUserTasks(
     (snap) => {
       const items: TaskConfigItem[] = snap.docs.map((d) => {
         const data = d.data();
-        return {
+        const item: TaskConfigItem = {
           taskId: String(data.taskId || d.id),
           uid: String(data.uid || uid),
           name: String(data.name || 'General'),
@@ -198,6 +200,10 @@ export function subscribeToUserTasks(
           createdAt: timestampToIso(data.createdAt),
           updatedAt: timestampToIso(data.updatedAt),
         };
+        if (typeof data.taskPassword === 'string' && data.taskPassword) {
+          item.taskPassword = data.taskPassword;
+        }
+        return item;
       });
       items.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       onData(items);
@@ -221,6 +227,7 @@ export async function saveTaskInFirestore(
     taskId?: string;
     name: string;
     targetDays: number[];
+    taskPassword?: string;
   }
 ): Promise<TaskConfigItem> {
   const cleanName = sanitizeString(input.name, 100);
@@ -231,8 +238,9 @@ export async function saveTaskInFirestore(
   const path = `users/${uid}/tasks/${taskId}`;
   const taskRef = doc(db, 'users', uid, 'tasks', taskId);
   const cleanTargetDays = normalizeTargetDays(input.targetDays);
+  const cleanPassword = sanitizeString(input.taskPassword || '', 128);
 
-  const payload = {
+  const payload: Record<string, unknown> = {
     taskId,
     uid: sanitizeString(uid, 128),
     name: cleanName,
@@ -240,6 +248,9 @@ export async function saveTaskInFirestore(
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
+  if (cleanPassword) {
+    payload.taskPassword = cleanPassword;
+  }
 
   try {
     await setDoc(taskRef, payload);
@@ -249,6 +260,7 @@ export async function saveTaskInFirestore(
       uid,
       name: cleanName,
       targetDays: cleanTargetDays,
+      ...(cleanPassword ? { taskPassword: cleanPassword } : {}),
       createdAt: nowIso,
       updatedAt: nowIso,
     };
@@ -266,6 +278,7 @@ export async function updateTaskInFirestore(
   updates: {
     name: string;
     targetDays: number[];
+    taskPassword?: string;
   }
 ): Promise<void> {
   const cleanName = sanitizeString(updates.name, 100);
@@ -275,13 +288,19 @@ export async function updateTaskInFirestore(
   const path = `users/${uid}/tasks/${taskId}`;
   const taskRef = doc(db, 'users', uid, 'tasks', taskId);
   const cleanTargetDays = normalizeTargetDays(updates.targetDays);
+  const cleanPassword = sanitizeString(updates.taskPassword || '', 128);
+
+  const updateFields: Record<string, unknown> = {
+    name: cleanName,
+    targetDays: cleanTargetDays,
+    updatedAt: serverTimestamp(),
+  };
+  if (cleanPassword) {
+    updateFields.taskPassword = cleanPassword;
+  }
 
   try {
-    await updateDoc(taskRef, {
-      name: cleanName,
-      targetDays: cleanTargetDays,
-      updatedAt: serverTimestamp(),
-    });
+    await updateDoc(taskRef, updateFields);
   } catch (err) {
     // If document didn't exist yet (e.g. legacy task from dashboard array), create it
     try {
@@ -290,6 +309,7 @@ export async function updateTaskInFirestore(
         uid: sanitizeString(uid, 128),
         name: cleanName,
         targetDays: cleanTargetDays,
+        ...(cleanPassword ? { taskPassword: cleanPassword } : {}),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });

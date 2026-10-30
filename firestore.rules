@@ -89,12 +89,13 @@ service cloud.firestore {
 
     function isValidTaskItem(data, uid, taskId) {
       return data.keys().hasAll(['taskId', 'uid', 'name', 'targetDays', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['taskId', 'uid', 'name', 'targetDays', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['taskId', 'uid', 'name', 'targetDays', 'taskPassword', 'createdAt', 'updatedAt'])
         && data.taskId is string && data.taskId.size() >= 1 && data.taskId.size() <= 128 && data.taskId == taskId
         && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == uid && data.uid == request.auth.uid
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
         && data.targetDays is list && data.targetDays.size() <= 7
         && (data.targetDays.size() == 0 || (data.targetDays[0] is number && data.targetDays[0] >= 0 && data.targetDays[0] <= 6))
+        && (!('taskPassword' in data) || (data.taskPassword is string && data.taskPassword.size() <= 128))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -367,8 +368,8 @@ service cloud.firestore {
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
           && (
-            // Action: Rename Task or Update Target Days
-            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'targetDays', 'updatedAt'])
+            // Action: Rename Task, Update Target Days, or Update Task Password
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'targetDays', 'taskPassword', 'updatedAt'])
           )
           && get(/databases/$(database)/documents/users/$(uid)).data.uid == request.auth.uid;
         allow delete: if isOwner(uid)

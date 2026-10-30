@@ -401,9 +401,11 @@ export default function App() {
   const [editPhotoUrl, setEditPhotoUrl] = useState('');
   const [editPhotoPreview, setEditPhotoPreview] = useState(PRESET_AVATARS[0]);
 
-  // Modal 2: Add Task Modal (with Task Name + 7 Selectable Target Weekdays)
+  // Modal 2: Add Task Modal (with Task Name + Create Password + 7 Selectable Target Weekdays)
   const [addTaskModalOpen, setAddTaskModalOpen] = useState(false);
   const [newTaskName, setNewTaskName] = useState('');
+  const [newTaskPassword, setNewTaskPassword] = useState('');
+  const [showNewTaskPassword, setShowNewTaskPassword] = useState(false);
   const [newTaskTargetDays, setNewTaskTargetDays] = useState<number[]>([]);
   const [addTaskError, setAddTaskError] = useState<string | null>(null);
   const [addTaskSubmitting, setAddTaskSubmitting] = useState(false);
@@ -428,11 +430,14 @@ export default function App() {
   const [editTaskError, setEditTaskError] = useState<string | null>(null);
   const [editTaskSubmitting, setEditTaskSubmitting] = useState(false);
 
-  // Modal 4: Delete Task Confirmation Modal
+  // Modal 4: Delete Task Confirmation Modal (with Password Verification)
   const [deleteTaskConfirmTarget, setDeleteTaskConfirmTarget] = useState<{
     taskName: string;
     taskIndex: number;
   } | null>(null);
+  const [deleteTaskPasswordInput, setDeleteTaskPasswordInput] = useState('');
+  const [showDeleteTaskPassword, setShowDeleteTaskPassword] = useState(false);
+  const [deleteTaskError, setDeleteTaskError] = useState<string | null>(null);
   const [deletingTask, setDeletingTask] = useState(false);
 
   // Toast Notification
@@ -494,6 +499,7 @@ export default function App() {
       const cleanTaskConfigs: Record<string, TaskConfigMapEntry> = {};
       for (const tName of cleanTasks) {
         const existingCfg = nextState.taskConfigs?.[tName];
+        const cleanPwd = sanitizeString(existingCfg?.taskPassword || '', 128);
         cleanTaskConfigs[tName] = {
           taskId: sanitizeString(
             existingCfg?.taskId ||
@@ -502,6 +508,7 @@ export default function App() {
           ),
           name: tName,
           targetDays: normalizeTargetDays(existingCfg?.targetDays),
+          ...(cleanPwd ? { taskPassword: cleanPwd } : {}),
         };
       }
 
@@ -645,6 +652,9 @@ export default function App() {
               `tsk_${tName.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
             name: tName,
             targetDays: normalizeTargetDays(rawCfg?.targetDays),
+            ...(typeof rawCfg?.taskPassword === 'string' && rawCfg.taskPassword
+              ? { taskPassword: rawCfg.taskPassword }
+              : {}),
           };
         }
         setAppState({
@@ -791,12 +801,18 @@ export default function App() {
                     : {};
                 for (const tName of loadedTasks) {
                   const cfg = rawConfigs[tName] || mergedConfigs[tName];
+                  const pwd =
+                    (typeof rawConfigs[tName]?.taskPassword === 'string' &&
+                      rawConfigs[tName].taskPassword) ||
+                    mergedConfigs[tName]?.taskPassword ||
+                    '';
                   mergedConfigs[tName] = {
                     taskId:
                       cfg?.taskId ||
                       `tsk_${tName.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
                     name: tName,
                     targetDays: normalizeTargetDays(cfg?.targetDays),
+                    ...(pwd ? { taskPassword: pwd } : {}),
                   };
                 }
                 return {
@@ -859,10 +875,13 @@ export default function App() {
               if (!nextTasks.some((t) => t.toLowerCase() === item.name.toLowerCase())) {
                 nextTasks.push(item.name);
               }
+              const pwd =
+                item.taskPassword || nextConfigs[item.name]?.taskPassword || '';
               nextConfigs[item.name] = {
                 taskId: item.taskId,
                 name: item.name,
                 targetDays: normalizeTargetDays(item.targetDays),
+                ...(pwd ? { taskPassword: pwd } : {}),
               };
             }
             const nextActive =
@@ -1602,6 +1621,8 @@ export default function App() {
   const openAddTaskModal = () => {
     setTaskMenuState(null);
     setNewTaskName('');
+    setNewTaskPassword('');
+    setShowNewTaskPassword(false);
     setNewTaskTargetDays([]);
     setAddTaskError(null);
     setAddTaskModalOpen(true);
@@ -1614,6 +1635,12 @@ export default function App() {
     const cleanName = newTaskName.trim();
     if (!cleanName) {
       setAddTaskError('Task name is required.');
+      return;
+    }
+
+    const cleanPassword = newTaskPassword.trim();
+    if (!cleanPassword) {
+      setAddTaskError('Please create a password for this task.');
       return;
     }
 
@@ -1648,6 +1675,7 @@ export default function App() {
           taskId,
           name: cleanName,
           targetDays: cleanTargetDays,
+          taskPassword: cleanPassword,
         });
       }
 
@@ -1663,6 +1691,7 @@ export default function App() {
             taskId,
             name: cleanName,
             targetDays: cleanTargetDays,
+            taskPassword: cleanPassword,
           },
         };
         return {
@@ -1674,6 +1703,8 @@ export default function App() {
       });
 
       setNewTaskName('');
+      setNewTaskPassword('');
+      setShowNewTaskPassword(false);
       setNewTaskTargetDays([]);
       setAddTaskModalOpen(false);
       showToast(`Task "${cleanName}" created & selected!`);
@@ -1761,12 +1792,14 @@ export default function App() {
     const taskId =
       existingCfg?.taskId ||
       `tsk_${cleanNewName.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`;
+    const existingPassword = existingCfg?.taskPassword;
 
     try {
       if (authUser) {
         await updateTaskInFirestore(authUser.uid, taskId, {
           name: cleanNewName,
           targetDays: cleanTargetDays,
+          ...(existingPassword ? { taskPassword: existingPassword } : {}),
         });
       }
 
@@ -1787,6 +1820,7 @@ export default function App() {
           taskId,
           name: cleanNewName,
           targetDays: cleanTargetDays,
+          ...(existingPassword ? { taskPassword: existingPassword } : {}),
         };
 
         const oldPrefix = `${renamingOldName}__`;
@@ -1848,15 +1882,35 @@ export default function App() {
       );
       return;
     }
+    setDeleteTaskPasswordInput('');
+    setShowDeleteTaskPassword(false);
+    setDeleteTaskError(null);
     setDeleteTaskConfirmTarget({ taskName, taskIndex });
   };
 
-  const handleConfirmDeleteTask = async () => {
+  const handleConfirmDeleteTask = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (!deleteTaskConfirmTarget || deletingTask) return;
     const { taskName, taskIndex } = deleteTaskConfirmTarget;
-    setDeletingTask(true);
+
+    const enteredPassword = deleteTaskPasswordInput.trim();
+    if (!enteredPassword) {
+      setDeleteTaskError('Please enter the task password to delete this task.');
+      return;
+    }
 
     const existingCfg = appState.taskConfigs?.[taskName];
+    const savedPassword = existingCfg?.taskPassword || '';
+    if (savedPassword && enteredPassword !== savedPassword) {
+      setDeleteTaskError(
+        'Incorrect password! The password you entered does not match this task.'
+      );
+      return;
+    }
+
+    setDeleteTaskError(null);
+    setDeletingTask(true);
+
     const taskId =
       existingCfg?.taskId ||
       `tsk_${taskName.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`;
@@ -1907,9 +1961,11 @@ export default function App() {
       });
 
       setDeleteTaskConfirmTarget(null);
+      setDeleteTaskPasswordInput('');
+      setDeleteTaskError(null);
       showToast(`Task "${taskName}" and its history were deleted.`);
     } catch (err) {
-      showToast(
+      setDeleteTaskError(
         err instanceof Error ? err.message : 'Failed to delete task.'
       );
     } finally {
@@ -4212,6 +4268,42 @@ export default function App() {
               </div>
 
               <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Create Password *
+                </label>
+                <div className="relative">
+                  <input
+                    type={showNewTaskPassword ? 'text' : 'password'}
+                    maxLength={64}
+                    data-testid="add-task-password-input"
+                    placeholder="Create a password to protect this task"
+                    value={newTaskPassword}
+                    onChange={(e) => {
+                      setNewTaskPassword(e.target.value);
+                      if (addTaskError) setAddTaskError(null);
+                    }}
+                    className="w-full pl-3.5 pr-10 py-2.5 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-emerald-400"
+                  />
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    onClick={() => setShowNewTaskPassword((prev) => !prev)}
+                    className="absolute inset-y-0 right-0 px-3 text-slate-400 hover:text-slate-200 flex items-center justify-center cursor-pointer"
+                    title={showNewTaskPassword ? 'Hide password' : 'Show password'}
+                  >
+                    <i
+                      className={`fa-solid ${
+                        showNewTaskPassword ? 'fa-eye-slash' : 'fa-eye'
+                      } text-xs`}
+                    ></i>
+                  </button>
+                </div>
+                <p className="mt-1 text-[11px] text-slate-400">
+                  Required to delete this task later.
+                </p>
+              </div>
+
+              <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="block text-xs font-semibold text-slate-300">
                     Target Days <span className="text-slate-500 font-normal">(Optional)</span>
@@ -4450,40 +4542,91 @@ export default function App() {
           <div className="bg-[#0f172a] border border-slate-700/80 rounded-2xl max-w-sm w-full overflow-hidden shadow-2xl">
             <div className="tracker-header-banner px-5 py-3.5 flex items-center justify-between">
               <h3 className="font-bold text-slate-100 text-sm tracking-tight flex items-center gap-2">
-                <i className="fa-solid fa-triangle-exclamation text-rose-400"></i>
+                <i className="fa-solid fa-lock text-rose-400"></i>
                 <span>Delete Task</span>
               </h3>
               <button
                 type="button"
                 disabled={deletingTask}
-                onClick={() => setDeleteTaskConfirmTarget(null)}
+                onClick={() => {
+                  setDeleteTaskConfirmTarget(null);
+                  setDeleteTaskPasswordInput('');
+                  setDeleteTaskError(null);
+                }}
                 className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition cursor-pointer disabled:opacity-50"
               >
                 <i className="fa-solid fa-xmark"></i>
               </button>
             </div>
-            <div className="p-5 space-y-4">
+            <form onSubmit={handleConfirmDeleteTask} className="p-5 space-y-4">
+              {deleteTaskError && (
+                <div
+                  data-testid="delete-task-error"
+                  className="p-3 rounded-xl bg-rose-950/70 border border-rose-500/40 text-rose-300 text-xs font-medium leading-relaxed"
+                >
+                  {deleteTaskError}
+                </div>
+              )}
+
               <p className="text-xs text-slate-300 leading-relaxed">
-                Are you sure you want to delete{' '}
+                Enter the password created for{' '}
                 <span className="font-bold text-white">
                   &ldquo;{deleteTaskConfirmTarget.taskName}&rdquo;
-                </span>
-                ? Its saved progress history and task notes will also be permanently deleted.
+                </span>{' '}
+                to confirm deletion. Its saved progress history and task notes will also be permanently deleted.
               </p>
-              <div className="flex items-center justify-end gap-2">
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Task Password *
+                </label>
+                <div className="relative">
+                  <input
+                    type={showDeleteTaskPassword ? 'text' : 'password'}
+                    autoFocus
+                    maxLength={64}
+                    data-testid="delete-task-password-input"
+                    placeholder="Enter task password"
+                    value={deleteTaskPasswordInput}
+                    onChange={(e) => {
+                      setDeleteTaskPasswordInput(e.target.value);
+                      if (deleteTaskError) setDeleteTaskError(null);
+                    }}
+                    className="w-full pl-3.5 pr-10 py-2.5 rounded-lg bg-[#0b0f19] border border-slate-700 text-white text-sm focus:outline-none focus:border-rose-400"
+                  />
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    onClick={() => setShowDeleteTaskPassword((prev) => !prev)}
+                    className="absolute inset-y-0 right-0 px-3 text-slate-400 hover:text-slate-200 flex items-center justify-center cursor-pointer"
+                    title={showDeleteTaskPassword ? 'Hide password' : 'Show password'}
+                  >
+                    <i
+                      className={`fa-solid ${
+                        showDeleteTaskPassword ? 'fa-eye-slash' : 'fa-eye'
+                      } text-xs`}
+                    ></i>
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-1">
                 <button
                   type="button"
                   disabled={deletingTask}
-                  onClick={() => setDeleteTaskConfirmTarget(null)}
+                  onClick={() => {
+                    setDeleteTaskConfirmTarget(null);
+                    setDeleteTaskPasswordInput('');
+                    setDeleteTaskError(null);
+                  }}
                   className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold cursor-pointer disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
-                  type="button"
+                  type="submit"
                   disabled={deletingTask}
                   data-testid="confirm-delete-task-btn"
-                  onClick={handleConfirmDeleteTask}
                   className="px-4 py-2 rounded-lg bg-rose-500 hover:bg-rose-400 text-slate-950 text-xs font-bold tracking-wide cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
                 >
                   {deletingTask ? (
@@ -4499,7 +4642,7 @@ export default function App() {
                   )}
                 </button>
               </div>
-            </div>
+            </form>
           </div>
         </div>
       )}

@@ -516,6 +516,86 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "TaskItem": {
+      "title": "TaskItem",
+      "description": "User-created task configuration with target weekdays and task password stored in users/{uid}/tasks/{taskId}",
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "targetDays": {
+          "type": "array",
+          "description": "Allowed weekday indices (0=Sun..6=Sat); empty array allows all days"
+        },
+        "taskPassword": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Password required to delete this task"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["taskId", "uid", "name", "targetDays", "createdAt", "updatedAt"]
+    },
+    "TaskProgress": {
+      "title": "TaskProgress",
+      "description": "Daily progress record for a task stored in users/{uid}/tasks/{taskId}/progress/{dateId}",
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string",
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "taskId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["completed", "missed", "not_completed", "skipped"],
+          "maxLength": 20
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["date", "uid", "taskId", "status", "note", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -534,6 +614,14 @@
     "/users/{uid}/expenditures/{expenditureId}": {
       "schema": { "$ref": "#/entities/CalendarExpenditure" },
       "description": "User's daily expenditure entries in INR for specific YYYY-MM-DD dates"
+    },
+    "/users/{uid}/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/TaskItem" },
+      "description": "User's tasks with target weekday schedules and task password"
+    },
+    "/users/{uid}/tasks/{taskId}/progress/{dateId}": {
+      "schema": { "$ref": "#/entities/TaskProgress" },
+      "description": "Daily progress records per task keyed by YYYY-MM-DD"
     },
     "/users/{uid}/trackers/{trackerId}": {
       "schema": { "$ref": "#/entities/Tracker" },
